@@ -281,12 +281,9 @@ const recordingEgress: ContainerEgressBinding = ({ props }) => {
 export class ContainerManagedTestObject extends ContainerHarnessTestObject {
   override agent(): ContainerAgent {
     return claudeCode({
-      access: {
-        gateway: {
-          url: "https://gateway.example/v1/acct/gw",
-          token: "gw-secret"
-        }
-      },
+      baseUrl: "https://gateway.example/v1/acct/gw/anthropic",
+      apiKey: "gw-secret",
+      headers: { "cf-aig-metadata": '{"project":"tests"}' },
       version: "9.9.9"
     });
   }

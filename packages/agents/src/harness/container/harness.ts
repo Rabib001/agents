@@ -161,7 +161,7 @@ export type ContainerHarnessOptions = {
   /**
    * `ctx.exports.ContainerEgress`, which adds the agent's credentials to
    * its requests outside the container. Required when the agent has egress
-   * routes (every preset with `access` does). Export `ContainerEgress` from
+   * routes (every preset does). Export `ContainerEgress` from
    * your Worker's main module.
    */
   readonly egress?: ContainerEgressBinding;

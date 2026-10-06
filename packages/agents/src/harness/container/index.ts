@@ -26,7 +26,7 @@ export {
   type ContainerAgent,
   type ContainerImage,
   type CustomAgentOptions,
-  type ModelAccess
+  type ProviderConnection
 } from "./agents";
 export {
   ContainerEgress,

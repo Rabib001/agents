@@ -4,30 +4,36 @@
  *
  * A preset is data: the adapter the daemon runs, how the container is
  * built, the environment the CLI sees, and the egress routes that carry
- * its credentials. Credentials go in `access` and never into the
+ * its credentials. Credentials (`apiKey`, `headers`) never go into the
  * container: the CLI calls a placeholder host, and `ContainerEgress`
- * forwards to the real one with the real key (see `./egress`).
+ * forwards to `baseUrl` with the real credentials (see `./egress`).
  */
 
 import type { EgressRoute } from "./egress";
 import type { SetupStep } from "./managed-image";
 import type { JsonValue } from "./protocol";
 
-/** How a CLI reaches its model provider. */
-export type ModelAccess =
+/**
+ * Where a CLI's model requests go, and the credentials they carry. Added
+ * outside the container, by `ContainerEgress`.
+ *
+ * - Straight to the provider: `{ apiKey }`.
+ * - AI Gateway with Unified Billing: `{ baseUrl: `${gateway}/anthropic`,
+ *   apiKey: gatewayToken }`; the gateway takes its token as the key.
+ * - AI Gateway with BYOK: `{ baseUrl, headers: { "cf-aig-authorization":
+ *   `Bearer ${gatewayToken}` } }`; the gateway holds the provider key.
+ */
+export type ProviderConnection = {
+  /** Sent the way the provider expects: `x-api-key`, or `Authorization: Bearer`. */
+  readonly apiKey?: string;
   /**
-   * Through an AI Gateway. With Unified Billing the gateway token is the
-   * only credential; with BYOK the gateway holds the provider key.
+   * The provider's base URL, as its SDK names it (`ANTHROPIC_BASE_URL`,
+   * `OPENAI_BASE_URL`). Default: the provider's own API.
    */
-  | {
-      readonly gateway: {
-        /** `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>` */
-        readonly url: string;
-        readonly token: string;
-      };
-    }
-  /** Straight to the provider, with its API key. */
-  | { readonly apiKey: string };
+  readonly baseUrl?: string;
+  /** More headers on every model request, such as gateway metadata. */
+  readonly headers?: { readonly [name: string]: string };
+};
 
 /** How the container is built. */
 export type ContainerImage =
@@ -73,32 +79,27 @@ function npmInstall(name: string, pkg: string): SetupStep {
 /** The egress route for one provider. */
 function route(
   host: string,
-  access: ModelAccess,
+  connection: ProviderConnection,
   provider: {
-    readonly gatewayPath: string;
-    readonly directUrl: string;
+    readonly baseUrl: string;
     readonly keyHeader: (key: string) => { readonly [name: string]: string };
   }
 ): EgressRoute {
-  if ("gateway" in access) {
-    return {
-      host,
-      upstream: `${access.gateway.url.replace(/\/+$/, "")}/${provider.gatewayPath}`,
-      headers: { "cf-aig-authorization": `Bearer ${access.gateway.token}` },
-      strip: CREDENTIAL_HEADERS
-    };
-  }
   return {
     host,
-    upstream: provider.directUrl,
-    headers: provider.keyHeader(access.apiKey),
+    upstream: connection.baseUrl ?? provider.baseUrl,
+    headers: {
+      ...(connection.apiKey === undefined
+        ? {}
+        : provider.keyHeader(connection.apiKey)),
+      ...connection.headers
+    },
     strip: CREDENTIAL_HEADERS
   };
 }
 
-/** `claudeCode()`'s options. */
-export type ClaudeCodeAgentOptions = {
-  readonly access: ModelAccess;
+/** `claudeCode()`'s options: its provider connection and settings. */
+export type ClaudeCodeAgentOptions = ProviderConnection & {
   /** Default `claude-sonnet-4-5`. Change one session's with `setModel`. */
   readonly model?: string;
   /** The `@anthropic-ai/claude-code` version. Default `2.1.289`. */
@@ -114,7 +115,8 @@ export type ClaudeCodeAgentOptions = {
 /**
  * Claude Code, installed at runtime on `cloudflare/debian-trixie`.
  *
- * @param options - How it reaches Anthropic, and its settings.
+ * @param options - Its provider connection (`apiKey`, `baseUrl`,
+ *   `headers`) and settings.
  * @returns The agent, for `ContainerHarness`'s `agent`.
  */
 export function claudeCode(options: ClaudeCodeAgentOptions): ContainerAgent {
@@ -137,9 +139,8 @@ export function claudeCode(options: ClaudeCodeAgentOptions): ContainerAgent {
       DISABLE_AUTOUPDATER: "1"
     },
     egress: [
-      route(host, options.access, {
-        gatewayPath: "anthropic",
-        directUrl: "https://api.anthropic.com",
+      route(host, options, {
+        baseUrl: "https://api.anthropic.com",
         keyHeader: (key) => ({ "x-api-key": key })
       })
     ],
@@ -159,9 +160,8 @@ export function claudeCode(options: ClaudeCodeAgentOptions): ContainerAgent {
   };
 }
 
-/** `codex()`'s options. */
-export type CodexAgentOptions = {
-  readonly access: ModelAccess;
+/** `codex()`'s options: its provider connection and settings. */
+export type CodexAgentOptions = ProviderConnection & {
   /** Default `gpt-5.1`. Change one session's with `setModel`. */
   readonly model?: string;
   /** The `@openai/codex` version. Default `0.157.0`. */
@@ -175,7 +175,8 @@ export type CodexAgentOptions = {
 /**
  * Codex, installed at runtime on `cloudflare/debian-trixie`.
  *
- * @param options - How it reaches OpenAI, and its settings.
+ * @param options - Its provider connection (`apiKey`, `baseUrl`,
+ *   `headers`) and settings.
  * @returns The agent, for `ContainerHarness`'s `agent`.
  */
 export function codex(options: CodexAgentOptions): ContainerAgent {
@@ -194,9 +195,8 @@ export function codex(options: CodexAgentOptions): ContainerAgent {
       OPENAI_API_KEY: PLACEHOLDER_KEY
     },
     egress: [
-      route(host, options.access, {
-        gatewayPath: "openai",
-        directUrl: "https://api.openai.com/v1",
+      route(host, options, {
+        baseUrl: "https://api.openai.com/v1",
         keyHeader: (key) => ({ authorization: `Bearer ${key}` })
       })
     ],

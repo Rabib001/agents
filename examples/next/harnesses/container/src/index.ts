@@ -5,8 +5,7 @@ import {
   claudeCode,
   codex,
   echoAgent,
-  type ContainerAgent,
-  type ModelAccess
+  type ContainerAgent
 } from "agents/harness/container";
 import { Lifecycle } from "agents/lifecycle";
 
@@ -109,17 +108,19 @@ export class CodingAgent extends DurableObject<Env> {
 
 /** The agent `HARNESS_AGENT` names, reaching its provider through AI Gateway. */
 function agentFor(env: Env): ContainerAgent {
-  const access: ModelAccess = {
-    gateway: { url: env.AI_GATEWAY_URL, token: env.AI_GATEWAY_TOKEN }
-  };
+  // With Unified Billing the gateway takes its own token as the key.
+  const key = env.AI_GATEWAY_TOKEN;
   const name: string = env.HARNESS_AGENT;
   switch (name) {
     case "codex":
-      return codex({ access });
+      return codex({ baseUrl: `${env.AI_GATEWAY_URL}/openai`, apiKey: key });
     case "echo":
       return echoAgent();
     default:
-      return claudeCode({ access });
+      return claudeCode({
+        baseUrl: `${env.AI_GATEWAY_URL}/anthropic`,
+        apiKey: key
+      });
   }
 }
 

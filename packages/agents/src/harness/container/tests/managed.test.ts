@@ -64,11 +64,12 @@ describe("ContainerHarness with a managed image", () => {
     expect(probe.upstream?.url).toBe(
       "https://gateway.example/v1/acct/gw/anthropic/v1/messages?beta=true"
     );
+    // The placeholder key is replaced by the real one.
     expect(probe.upstream?.headers).toMatchObject({
-      "cf-aig-authorization": "Bearer gw-secret",
+      "x-api-key": "gw-secret",
+      "cf-aig-metadata": '{"project":"tests"}',
       "content-type": "application/json"
     });
-    expect(probe.upstream?.headers).not.toHaveProperty("x-api-key");
   });
 
   it("routes egress again for a container restored from a snapshot", async () => {
@@ -151,5 +152,37 @@ describe("forwardEgress", () => {
       async () => new Response("should not be called")
     );
     expect(response.status).toBe(403);
+  });
+});
+
+describe("presets", () => {
+  it("send the key the provider's way, to its own API by default", async () => {
+    const { claudeCode, codex } = await import("../agents");
+    const direct = codex({ apiKey: "sk-real" });
+    expect(direct.egress).toEqual([
+      {
+        host: "openai.harness.internal",
+        upstream: "https://api.openai.com/v1",
+        headers: { authorization: "Bearer sk-real" },
+        strip: ["authorization", "x-api-key", "cf-aig-authorization"]
+      }
+    ]);
+    expect(JSON.stringify(direct.env)).not.toContain("sk-real");
+    expect(claudeCode({ apiKey: "k" }).egress[0]).toMatchObject({
+      upstream: "https://api.anthropic.com",
+      headers: { "x-api-key": "k" }
+    });
+  });
+
+  it("authenticate with headers alone, for a BYOK gateway", async () => {
+    const { claudeCode } = await import("../agents");
+    const byok = claudeCode({
+      baseUrl: "https://gw.example/anthropic",
+      headers: { "cf-aig-authorization": "Bearer t" }
+    });
+    expect(byok.egress[0]).toMatchObject({
+      upstream: "https://gw.example/anthropic",
+      headers: { "cf-aig-authorization": "Bearer t" }
+    });
   });
 });

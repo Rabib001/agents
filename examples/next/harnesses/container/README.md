@@ -32,8 +32,10 @@ export class CodingAgent extends DurableObject<Env> {
 const { text } = await this.harness.prompt("Add a test for parse()");
 ```
 
-`codex({ access })` instead of `claudeCode({ access })` runs Codex. Nothing
-else changes. `access` can also be `{ apiKey }` to call the provider directly.
+`codex()` with the gateway's `/openai` base URL runs Codex instead.
+Nothing else changes. Leave out `baseUrl` to call the provider directly with
+its own key, and add `headers` for anything else a request needs (gateway
+metadata, or `cf-aig-authorization` for a BYOK gateway).
 
 ```jsonc
 // wrangler.jsonc
@@ -59,7 +61,7 @@ else changes. `access` can also be `{ apiKey }` to call the provider directly.
   (`http://anthropic.harness.internal`) with a placeholder key. The harness
   intercepts that host with `ctx.container.interceptOutboundHttp()`, and
   `ContainerEgress`, running in your Worker, swaps in the real credentials
-  and forwards to AI Gateway. `env` in the container shows only the
+  and forwards to `baseUrl`. `env` in the container shows only the
   placeholder.
 - **Recovery.** The container stops five minutes after the last prompt
   (`idleTimeoutMs`). The next prompt starts a new one from the snapshot,
