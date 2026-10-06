@@ -1,0 +1,47 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "next-claude-code-harness",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ClaudeCodeAgent",
+        "class_name": "ClaudeCodeAgent"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ClaudeCodeAgent"]
+    }
+  ],
+  // One container per agent object, started and stopped by the object
+  // through `ctx.container`.
+  "containers": [
+    {
+      "class_name": "ClaudeCodeAgent",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "agent": { "dockerfile": "./container/Dockerfile" }
+      }
+    }
+  ],
+  "vars": {
+    // "echo" runs the whole path without a model or credentials.
+    "HARNESS_ADAPTER": "claude-code",
+    // Your AI Gateway's Anthropic endpoint, such as
+    // https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic
+    "ANTHROPIC_BASE_URL": ""
+  },
+  // Set with `wrangler secret put ANTHROPIC_API_KEY` (or in .dev.vars).
+  // Not needed with HARNESS_ADAPTER "echo".
+  "secrets": {
+    "required": ["ANTHROPIC_API_KEY"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}

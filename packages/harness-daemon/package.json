@@ -1,0 +1,31 @@
+{
+  "name": "@cloudflare/harness-daemon",
+  "description": "Experimental: the process that runs an agent CLI inside a Cloudflare Container for ContainerHarness (agents/harness/container), with a Claude Code adapter",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "exports": {
+    ".": "./src/server.ts",
+    "./claude-code": "./src/adapters/claude-code.ts"
+  },
+  "bin": {
+    "harness-daemon": "./dist/main.mjs"
+  },
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --platform=node --format=esm --target=node24 --external:@anthropic-ai/claude-agent-sdk --banner:js=\"import{createRequire as __nodeRequire}from'node:module';const require=__nodeRequire(import.meta.url);\" --outfile=dist/main.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.289",
+    "agents": "workspace:*",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3",
+    "vitest": "4.1.11"
+  }
+}

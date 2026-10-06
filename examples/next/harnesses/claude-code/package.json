@@ -1,0 +1,23 @@
+{
+  "name": "@cloudflare/agents-next-claude-code-harness-example",
+  "description": "Experimental: Claude Code in a Cloudflare Container, driven from a Durable Object by agents/harness/container",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "scripts": {
+    "build:daemon": "pnpm --filter @cloudflare/harness-daemon run build && cp ../../../../packages/harness-daemon/dist/main.mjs container/harness-daemon.mjs",
+    "dev": "pnpm run build:daemon && wrangler dev",
+    "deploy": "pnpm run build:daemon && wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types env.d.ts --include-runtime false"
+  },
+  "dependencies": {
+    "agents": "*"
+  },
+  "devDependencies": {
+    "@cloudflare/harness-daemon": "workspace:*",
+    "@cloudflare/workers-types": "^5.20260729.1",
+    "typescript": "^6.0.3",
+    "wrangler": "^4.145.0"
+  }
+}
