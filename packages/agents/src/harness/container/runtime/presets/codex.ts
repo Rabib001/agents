@@ -14,8 +14,8 @@ import type {
   ContainerMessage,
   ContainerPart,
   JsonValue
-} from "agents/harness/container/daemon";
-import { cliAdapter, type CliAdapterOptions } from "../cli-adapter";
+} from "../../protocol";
+import type { CliAdapterOptions } from "../cli-adapter";
 import { isJsonObject, stringsOf } from "../json";
 
 type Item = {
@@ -264,6 +264,3 @@ export const codexCli: CliAdapterOptions = {
     };
   }
 };
-
-/** The Codex adapter. */
-export const codex = cliAdapter(codexCli);

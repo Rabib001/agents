@@ -12,6 +12,10 @@
         "name": "CONTAINER_RETRY_TEST",
         "class_name": "ContainerRetryTestObject"
       },
+      {
+        "name": "CONTAINER_MANAGED_TEST",
+        "class_name": "ContainerManagedTestObject"
+      },
       { "name": "HARNESS_STORE_TEST", "class_name": "HarnessStoreTestObject" }
     ]
   },
@@ -21,6 +25,7 @@
       "new_sqlite_classes": [
         "ContainerHarnessTestObject",
         "ContainerRetryTestObject",
+        "ContainerManagedTestObject",
         "HarnessStoreTestObject"
       ]
     }

@@ -1,4 +1,4 @@
-import type { JsonValue } from "agents/harness/container/daemon";
+import type { JsonValue } from "../protocol";
 
 /** A JSON object. */
 export type JsonObject = { readonly [key: string]: JsonValue };

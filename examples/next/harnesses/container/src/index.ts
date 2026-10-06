@@ -1,35 +1,38 @@
 import { DurableObject } from "cloudflare:workers";
 import { routeAgentRequest } from "agents";
-import { ContainerHarness } from "agents/harness/container";
+import {
+  ContainerHarness,
+  claudeCode,
+  codex,
+  echoAgent,
+  type ContainerAgent,
+  type ModelAccess
+} from "agents/harness/container";
 import { Lifecycle } from "agents/lifecycle";
 
-/** Each adapter's model, as the CLI names it. */
-const MODELS: Record<string, string> = {
-  "claude-code": "claude-sonnet-4-5",
-  codex: "gpt-5.1"
-};
+// The harness adds credentials outside the container through this
+// entrypoint; it must be exported from the main module.
+export { ContainerEgress } from "agents/harness/container";
 
 /**
- * One coding agent per object: an agent CLI (Claude Code or Codex, picked
- * by `HARNESS_ADAPTER`) runs in this object's container, and
- * `ContainerHarness` drives it with the same interface as `PiHarness`.
+ * One coding agent per object: Claude Code or Codex (picked by
+ * `HARNESS_AGENT`) runs in this object's container, and `ContainerHarness`
+ * drives it with the same interface as `PiHarness`.
  *
- * The object keeps everything durable: sessions, operations, the
- * transcript, and the CLI's own session files. The container is
- * disposable: it starts on the first prompt, stops five minutes after the
- * last one, and the next prompt starts a new one in which the CLI resumes
- * its session where it left off.
+ * There is no image to build: the harness sets the container up from
+ * `cloudflare/debian-trixie` on first use and snapshots it. The object
+ * keeps everything durable (sessions, operations, the transcript, the
+ * CLI's own session files) and the container is disposable: it stops five
+ * minutes after the last prompt, and the next prompt starts a new one in
+ * which the CLI resumes its session. The AI Gateway token stays in the
+ * object; the container only ever sees a placeholder.
  */
 export class CodingAgent extends DurableObject<Env> {
   readonly harness = new ContainerHarness({
     container: containerOf(this.ctx),
-    launch: {
-      image: imageOf(this.ctx, "agent"),
-      instance: "standard-2",
-      enableInternet: true,
-      env: launchEnv(this.env)
-    },
-    defaults: { model: MODELS[this.env.HARNESS_ADAPTER] }
+    agent: agentFor(this.env),
+    egress: this.ctx.exports.ContainerEgress,
+    instance: "standard-2"
   });
 
   readonly lifecycle = Lifecycle.install(this).use(this.harness);
@@ -104,19 +107,20 @@ export class CodingAgent extends DurableObject<Env> {
   }
 }
 
-/**
- * The container's environment: which CLI to run, and the AI Gateway both
- * CLIs reach their provider through. With Unified Billing the gateway
- * token is the only credential; no provider key enters the container.
- */
-function launchEnv(env: Env): Record<string, string> {
-  return {
-    CF_HARNESS_ADAPTER: env.HARNESS_ADAPTER,
-    ANTHROPIC_BASE_URL: `${env.AI_GATEWAY_URL}/anthropic`,
-    ANTHROPIC_API_KEY: env.AI_GATEWAY_TOKEN,
-    OPENAI_BASE_URL: `${env.AI_GATEWAY_URL}/openai`,
-    OPENAI_API_KEY: env.AI_GATEWAY_TOKEN
+/** The agent `HARNESS_AGENT` names, reaching its provider through AI Gateway. */
+function agentFor(env: Env): ContainerAgent {
+  const access: ModelAccess = {
+    gateway: { url: env.AI_GATEWAY_URL, token: env.AI_GATEWAY_TOKEN }
   };
+  const name: string = env.HARNESS_AGENT;
+  switch (name) {
+    case "codex":
+      return codex({ access });
+    case "echo":
+      return echoAgent();
+    default:
+      return claudeCode({ access });
+  }
 }
 
 function containerOf(ctx: DurableObjectState): Container {
@@ -124,14 +128,6 @@ function containerOf(ctx: DurableObjectState): Container {
     throw new Error("CodingAgent needs a container: see wrangler.jsonc");
   }
   return ctx.container;
-}
-
-/** A named image from the `images` map in wrangler.jsonc. */
-function imageOf(ctx: DurableObjectState, name: string): string | undefined {
-  // SAFETY: `images` is part of the `durable_object` scheduling policy's
-  // container API, which this workers-types version does not declare yet.
-  const images = (ctx.container as { images?: Record<string, string> }).images;
-  return images?.[name];
 }
 
 export default {

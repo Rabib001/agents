@@ -1,0 +1,155 @@
+import { env } from "cloudflare:workers";
+import { runDurableObjectAlarm } from "cloudflare:test";
+import { describe, expect, it } from "vitest";
+import { forwardEgress } from "../egress";
+
+function fresh() {
+  return env.CONTAINER_MANAGED_TEST.getByName(crypto.randomUUID());
+}
+
+async function until(check: () => Promise<boolean>, what: string) {
+  for (let i = 0; i < 300; i++) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for ${what}`);
+}
+
+describe("ContainerHarness with a managed image", () => {
+  it("sets up debian-trixie once, snapshots it, and restores the snapshot after", async () => {
+    const stub = fresh();
+    expect((await stub.prompt("hello")).status).toBe("done");
+    const first = await stub.setup();
+    expect(first.lastStart).toMatchObject({
+      image: "cloudflare/debian-trixie",
+      instance: "standard-1",
+      enableInternet: true
+    });
+    expect(first.execs.map((each) => each.cmd)).toEqual([
+      expect.stringContaining("useradd"),
+      expect.stringContaining("git"),
+      "npm install --global --no-fund --no-audit @anthropic-ai/claude-code@9.9.9",
+      expect.stringContaining("cat > /opt/harness/daemon.mjs")
+    ]);
+    // The daemon is written from the bundle the harness carries.
+    expect(first.execs.at(-1)?.stdinBytes).toBeGreaterThan(1_000);
+    expect(first.snapshots).toBe(1);
+
+    await stub.stopContainer();
+    expect((await stub.prompt("again")).status).toBe("done");
+    const second = await stub.setup();
+    expect(second.lastStart).toMatchObject({
+      containerSnapshot: { id: "snapshot-1" }
+    });
+    expect(second.lastStart).not.toHaveProperty("image");
+    expect(second.execs).toEqual([]);
+    expect(second.snapshots).toBe(1);
+  });
+
+  it("keeps credentials out of the container and adds them at the egress", async () => {
+    const stub = fresh();
+    await stub.prompt("hello");
+    const { env: containerEnv, intercepts } = await stub.setup();
+    expect(containerEnv).toMatchObject({
+      CF_HARNESS_ADAPTER: "claude-code",
+      CF_HARNESS_USER: "10001:10001",
+      ANTHROPIC_BASE_URL: "http://anthropic.harness.internal",
+      ANTHROPIC_API_KEY: "harness-egress"
+    });
+    expect(JSON.stringify(containerEnv)).not.toContain("gw-secret");
+    expect(intercepts).toEqual(["anthropic.harness.internal"]);
+
+    const probe = await stub.egressProbe();
+    expect(probe).toMatchObject({ status: 200, body: "upstream ok" });
+    expect(probe.upstream?.url).toBe(
+      "https://gateway.example/v1/acct/gw/anthropic/v1/messages?beta=true"
+    );
+    expect(probe.upstream?.headers).toMatchObject({
+      "cf-aig-authorization": "Bearer gw-secret",
+      "content-type": "application/json"
+    });
+    expect(probe.upstream?.headers).not.toHaveProperty("x-api-key");
+  });
+
+  it("routes egress again for a container restored from a snapshot", async () => {
+    const stub = fresh();
+    await stub.prompt("one");
+    await stub.stopContainer();
+    await stub.prompt("two");
+    expect((await stub.setup()).intercepts).toEqual([
+      "anthropic.harness.internal"
+    ]);
+  });
+
+  it("sets up afresh when the snapshot no longer restores", async () => {
+    const stub = fresh();
+    await stub.prompt("one");
+    await stub.stopContainer();
+    await stub.failSnapshotRestore(true);
+    const receipt = await stub.submit("two");
+    await until(async () => {
+      await runDurableObjectAlarm(stub);
+      return (await stub.setup()).execs.length > 0;
+    }, "a fresh setup");
+    await stub.failSnapshotRestore(false);
+    expect((await stub.wait(receipt.operationId)).status).toBe("done");
+    expect((await stub.setup()).lastStart).toMatchObject({
+      image: "cloudflare/debian-trixie"
+    });
+  });
+
+  it("reports a failed setup step", async () => {
+    const stub = fresh();
+    await stub.failExec("npm install");
+    const receipt = await stub.submit("hello");
+    await until(async () => {
+      await runDurableObjectAlarm(stub);
+      return (await stub.pending()).length === 0;
+    }, "the setup failures to give up");
+    expect(await stub.wait(receipt.operationId)).toMatchObject({
+      status: "unanswered",
+      reason: "container_unavailable"
+    });
+  });
+});
+
+describe("forwardEgress", () => {
+  const routes = [
+    {
+      host: "openai.harness.internal",
+      upstream: "https://api.openai.com/v1/",
+      headers: { authorization: "Bearer real" },
+      strip: ["authorization", "x-api-key"]
+    }
+  ];
+
+  it("swaps the placeholder credential for the real one", async () => {
+    let seen: Request | undefined;
+    const response = await forwardEgress(
+      new Request("http://openai.harness.internal/responses", {
+        method: "POST",
+        headers: { authorization: "Bearer harness-egress" },
+        body: "{}"
+      }),
+      routes,
+      async (url, init) => {
+        seen = new Request(url, init);
+        return new Response("ok");
+      }
+    );
+    expect(await response.text()).toBe("ok");
+    expect(seen?.url).toBe("https://api.openai.com/v1/responses");
+    expect(seen?.headers.get("authorization")).toBe("Bearer real");
+    expect(seen?.redirect).toBe("manual");
+    expect(await seen?.text()).toBe("{}");
+  });
+
+  it("refuses a host without a route", async () => {
+    const response = await forwardEgress(
+      new Request("http://elsewhere.example/"),
+      routes,
+      async () => new Response("should not be called")
+    );
+    expect(response.status).toBe(403);
+  });
+});

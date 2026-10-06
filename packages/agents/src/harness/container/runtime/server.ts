@@ -16,11 +16,10 @@ import {
   CONTAINER_ENV,
   CONTAINER_HEALTH_PATH,
   CONTAINER_SESSION_PATH,
-  CONTAINER_TOKEN_HEADER,
-  ContainerDaemon,
-  type ContainerAdapter
-} from "agents/harness/container/daemon";
-import { WebSocketServer, type RawData } from "ws";
+  CONTAINER_TOKEN_HEADER
+} from "../protocol";
+import { ContainerDaemon, type ContainerAdapter } from "../daemon-core";
+import { acceptWebSocket, type ServerSocket } from "./websocket";
 
 /** `serve`'s options. */
 export type ServeOptions = {
@@ -50,12 +49,6 @@ function tokenMatches(expected: string, given: string | undefined): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function text(data: RawData): string {
-  if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
-  if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
-  return data.toString("utf8");
-}
-
 /**
  * Start the daemon.
  *
@@ -67,9 +60,7 @@ export async function serve(options: ServeOptions): Promise<DaemonServer> {
     adapter: options.adapter,
     runtimeId: options.runtimeId
   });
-  // Turns can be silent for many minutes while a tool runs; never drop a
-  // socket for being quiet. Frames are capped by the object, not here.
-  const sockets = new WebSocketServer({ noServer: true, maxPayload: 64 << 20 });
+  const sockets = new Set<ServerSocket>();
   const server: Server = createServer((request, response) => {
     if (request.url === CONTAINER_HEALTH_PATH) {
       response.writeHead(200, { "content-type": "text/plain" });
@@ -96,19 +87,27 @@ export async function serve(options: ServeOptions): Promise<DaemonServer> {
         options.token,
         Array.isArray(header) ? header[0] : header
       );
-      sockets.handleUpgrade(request, socket, head, (ws) => {
-        if (!authorized || session.length === 0) {
-          ws.close(CLOSE_UNAUTHORIZED, "unauthorized");
-          return;
-        }
-        const connection = daemon.connect(session, {
-          send: (message) => ws.send(message),
-          close: (code, reason) => ws.close(code, reason)
+      if (!authorized || session.length === 0) {
+        const refused = acceptWebSocket(request, socket, head, {
+          message: () => {},
+          closed: () => {}
         });
-        ws.on("message", (data) => connection.receive(text(data)));
-        ws.on("close", () => connection.closed());
-        ws.on("error", () => connection.closed());
+        refused?.close(CLOSE_UNAUTHORIZED, "unauthorized");
+        return;
+      }
+      // Turns can be silent for many minutes while a tool runs; a quiet
+      // socket is never dropped.
+      let connection: ReturnType<ContainerDaemon["connect"]> | undefined;
+      const ws = acceptWebSocket(request, socket, head, {
+        message: (text) => connection?.receive(text),
+        closed: () => {
+          if (ws) sockets.delete(ws);
+          connection?.closed();
+        }
       });
+      if (!ws) return;
+      sockets.add(ws);
+      connection = daemon.connect(session, ws);
     }
   );
 
@@ -120,7 +119,7 @@ export async function serve(options: ServeOptions): Promise<DaemonServer> {
   return {
     port,
     async close() {
-      for (const client of sockets.clients) client.terminate();
+      for (const client of sockets) client.close(1001, "shutting down");
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await daemon.close();
     }

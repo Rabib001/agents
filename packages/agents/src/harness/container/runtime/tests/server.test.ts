@@ -1,13 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import WebSocket from "ws";
 import {
   CLOSE_UNAUTHORIZED,
   CONTAINER_TOKEN_HEADER,
-  echoAdapter,
   parseDaemonMessage,
   type DaemonMessage,
   type HostMessage
-} from "agents/harness/container/daemon";
+} from "../../protocol";
+import { echoAdapter } from "../../daemon-core";
 import { serve, type DaemonServer } from "../server";
 
 const TOKEN = "secret-token";
@@ -20,22 +19,27 @@ afterEach(async () => {
 
 /** A client that collects every message the daemon sends. */
 async function connect(port: number, session: string, token = TOKEN) {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/sessions/${session}`, {
+  // SAFETY: Node's WebSocket (undici) takes `headers` in its second
+  // argument, an extension the DOM type does not declare.
+  const init = {
     headers: { [CONTAINER_TOKEN_HEADER]: token }
-  });
+  } as unknown as string[];
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/sessions/${session}`, init);
   const received: DaemonMessage[] = [];
   const waiters: (() => void)[] = [];
-  ws.on("message", (data) => {
-    const message = parseDaemonMessage(data.toString());
+  ws.addEventListener("message", (event) => {
+    const message = parseDaemonMessage(String(event.data));
     if (message) received.push(message);
     for (const wake of waiters.splice(0)) wake();
   });
   const closed = new Promise<number>((resolve) =>
-    ws.on("close", (code) => resolve(code))
+    ws.addEventListener("close", (event) => resolve(event.code))
   );
   await new Promise<void>((resolve, reject) => {
-    ws.once("open", () => resolve());
-    ws.once("error", reject);
+    ws.addEventListener("open", () => resolve(), { once: true });
+    ws.addEventListener("error", () => reject(new Error("connect failed")), {
+      once: true
+    });
   });
   return {
     received,

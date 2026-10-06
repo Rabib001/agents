@@ -2,11 +2,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type {
-  AdapterContext,
-  ContainerEvent,
-  JsonValue
-} from "agents/harness/container/daemon";
+import type { ContainerEvent, JsonValue } from "../../protocol";
+import type { AdapterContext } from "../../daemon-core";
 import { cliAdapter } from "../cli-adapter";
 
 const FAKE = join(import.meta.dirname, "fake-cli.mjs");

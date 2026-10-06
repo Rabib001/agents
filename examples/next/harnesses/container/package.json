@@ -5,9 +5,8 @@
   "type": "module",
   "version": "0.0.0",
   "scripts": {
-    "build:daemon": "pnpm --filter @cloudflare/harness-daemon run build && cp ../../../../packages/harness-daemon/dist/main.mjs container/harness-daemon.mjs",
-    "dev": "pnpm run build:daemon && wrangler dev",
-    "deploy": "pnpm run build:daemon && wrangler deploy",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types env.d.ts --include-runtime false"
   },
@@ -15,7 +14,6 @@
     "agents": "*"
   },
   "devDependencies": {
-    "@cloudflare/harness-daemon": "workspace:*",
     "@cloudflare/workers-types": "^5.20260729.1",
     "typescript": "^6.0.3",
     "wrangler": "^4.145.0"

@@ -20,8 +20,19 @@ export class FakeContainer {
   starts = 0;
   inactivityTimeoutMs: number | undefined;
   lastEnv: Record<string, string> = {};
+  /** Options of the last `start()`, without `env`. */
+  lastStart: StartRecord = {};
+  /** Commands `exec()` ran, with their stdin, since the last start. */
+  execs: { readonly cmd: readonly string[]; readonly stdin: string }[] = [];
+  /** Hosts intercepted on the running container, with their handlers. */
+  intercepts = new Map<string, Fetcher>();
+  snapshots = 0;
   /** When set, `start()` throws, as a bad image or a full account would. */
   failStarts = false;
+  /** When set, an exec whose command contains this string exits 1. */
+  failExec: string | undefined;
+  /** When set, a start from a snapshot never comes up, as an expired one. */
+  failSnapshotRestore = false;
   #daemon: ContainerDaemon | undefined;
   #token = "";
   #sockets = new Set<WebSocket>();
@@ -35,16 +46,64 @@ export class FakeContainer {
     return this.#daemon !== undefined;
   }
 
-  start(options?: { env?: Record<string, string> }): void {
+  start(options?: StartRecord & { env?: Record<string, string> }): void {
     if (this.failStarts) throw new Error("no capacity");
     const env = options?.env ?? {};
     this.starts += 1;
     this.lastEnv = { ...env };
+    const { env: _env, ...rest } = options ?? {};
+    this.lastStart = rest;
+    this.execs = [];
+    this.intercepts = new Map();
+    if (options?.containerSnapshot && this.failSnapshotRestore) return;
     this.#token = env[CONTAINER_ENV.token] ?? "";
     this.#daemon = new ContainerDaemon({
       adapter: this.#adapter,
       runtimeId: env[CONTAINER_ENV.runtimeId] ?? "unknown"
     });
+  }
+
+  async exec(
+    cmd: string[],
+    options?: { stdin?: ReadableStream }
+  ): Promise<{
+    exitCode: Promise<number>;
+    output(): Promise<{
+      exitCode: number;
+      stdout: ArrayBuffer;
+      stderr: ArrayBuffer;
+    }>;
+    kill(): void;
+  }> {
+    if (!this.running) throw new Error("container is not running");
+    const stdin = options?.stdin
+      ? await new Response(options.stdin).text()
+      : "";
+    this.execs.push({ cmd: [...cmd], stdin });
+    const exitCode =
+      this.failExec !== undefined && cmd.join(" ").includes(this.failExec)
+        ? 1
+        : 0;
+    const stdout = new TextEncoder().encode(
+      exitCode === 0 ? "" : "boom"
+    ).buffer;
+    return {
+      exitCode: Promise.resolve(exitCode),
+      output: async () => ({ exitCode, stdout, stderr: new ArrayBuffer(0) }),
+      kill: () => {}
+    };
+  }
+
+  async snapshotContainer(_options: {
+    name?: string;
+  }): Promise<{ id: string; size: number }> {
+    if (!this.running) throw new Error("container is not running");
+    this.snapshots += 1;
+    return { id: `snapshot-${this.snapshots}`, size: 1 };
+  }
+
+  async interceptOutboundHttp(host: string, binding: Fetcher): Promise<void> {
+    this.intercepts.set(host, binding);
   }
 
   async setInactivityTimeout(ms: number | bigint): Promise<void> {
@@ -131,11 +190,21 @@ export class FakeContainer {
 
   /** This fake, typed as the platform's container for the harness. */
   asContainer(): Container {
-    // SAFETY: the harness uses only `running`, `start`, `destroy`,
-    // `getTcpPort` and `setInactivityTimeout`, all implemented above.
+    // SAFETY: the harness uses only `running`, `start`, `destroy`, `exec`,
+    // `snapshotContainer`, `interceptOutboundHttp`, `getTcpPort` and
+    // `setInactivityTimeout`, all implemented above.
     return this as unknown as Container;
   }
 }
+
+/** The start options the fake records. */
+export type StartRecord = {
+  image?: string;
+  instance?: string;
+  enableInternet?: boolean;
+  entrypoint?: string[];
+  containerSnapshot?: { id: string };
+};
 
 const containers = new Map<string, FakeContainer>();
 

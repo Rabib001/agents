@@ -1,8 +1,9 @@
 /**
  * An agent CLI in a Cloudflare Container, driven from a Durable Object.
  * `ContainerHarness` is a Lifecycle capability with the same interface as
- * `PiHarness`; the container runs the harness daemon with an adapter (see
- * `agents/harness/container/daemon`), and any adapter works.
+ * `PiHarness`. Pick what runs with a preset (`claudeCode()`, `codex()`):
+ * the harness sets the container up from `cloudflare/debian-trixie`, and
+ * `ContainerEgress` keeps the credentials outside it.
  *
  * @beta The API may change between releases.
  */
@@ -12,9 +13,28 @@ export {
   ContainerSessions,
   ROOT_SESSION,
   type ContainerHarnessOptions,
-  type ContainerLaunch,
+  type ContainerInstance,
   type ContainerSessionDefaults
 } from "./harness";
+export {
+  claudeCode,
+  codex,
+  containerAgent,
+  echoAgent,
+  type ClaudeCodeAgentOptions,
+  type CodexAgentOptions,
+  type ContainerAgent,
+  type ContainerImage,
+  type CustomAgentOptions,
+  type ModelAccess
+} from "./agents";
+export {
+  ContainerEgress,
+  type ContainerEgressBinding,
+  type ContainerEgressProps,
+  type EgressRoute
+} from "./egress";
+export type { SetupStep } from "./managed-image";
 export type {
   ContainerEvent,
   ContainerInput,

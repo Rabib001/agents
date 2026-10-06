@@ -1,6 +1,6 @@
 /**
  * The harness daemon's core, for the process inside the container. Pair it
- * with a transport (`@cloudflare/harness-daemon` serves it over `ws`) and an
+ * with a transport (`agents/harness/container/runtime` serves it in Node) and an
  * adapter for the agent you run. Runs anywhere: it uses no Node or Workers
  * APIs.
  *

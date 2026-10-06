@@ -19,19 +19,17 @@
     }
   ],
   // One container per agent object, started and stopped by the object
-  // through `ctx.container`.
+  // through `ctx.container`. No image: the harness builds the container
+  // from cloudflare/debian-trixie at runtime.
   "containers": [
     {
       "class_name": "CodingAgent",
-      "scheduling_policy": "durable_object",
-      "images": {
-        "agent": { "dockerfile": "./container/Dockerfile" }
-      }
+      "scheduling_policy": "durable_object"
     }
   ],
   "vars": {
     // "claude-code", "codex", or "echo" (no model or credentials).
-    "HARNESS_ADAPTER": "claude-code",
+    "HARNESS_AGENT": "claude-code",
     // Your AI Gateway: https://gateway.ai.cloudflare.com/v1/<account>/<gateway>
     "AI_GATEWAY_URL": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>"
   },

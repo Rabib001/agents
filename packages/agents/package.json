@@ -192,6 +192,11 @@
       "import": "./dist/harness/container/daemon/index.js",
       "require": "./dist/harness/container/daemon/index.js"
     },
+    "./harness/container/runtime": {
+      "types": "./dist/harness/container/runtime/index.d.ts",
+      "import": "./dist/harness/container/runtime/index.js",
+      "require": "./dist/harness/container/runtime/index.js"
+    },
     "./harness/store": {
       "types": "./dist/harness/store/index.d.ts",
       "import": "./dist/harness/store/index.js",
@@ -478,7 +483,8 @@
         ],
         "outputs": [
           "{projectRoot}/dist",
-          "{projectRoot}/docs"
+          "{projectRoot}/docs",
+          "{projectRoot}/src/harness/container/daemon-source.generated.ts"
         ]
       }
     }
@@ -496,7 +502,7 @@
     "test:workers": "vitest --project workers",
     "test:chat": "vitest --project chat",
     "test:harness:pi": "vitest --project harness-pi",
-    "test:harness:container": "vitest --project harness-container",
+    "test:harness:container": "vitest --project harness-container --project harness-container-runtime",
     "test:webmcp": "vitest --project webmcp",
     "test:x402": "vitest --project x402",
     "test:e2e": "vitest --run -c src/e2e-tests/vitest.config.ts",
@@ -510,6 +516,7 @@
     "test:conformance:server:mcp-agent": "bash conformance/run.sh server-mcp-agent",
     "test:conformance:server:handler": "bash conformance/run.sh server-handler",
     "test:conformance:server:handler:legacy-compat": "bash conformance/run.sh server-handler-legacy-compat",
-    "test:conformance:server:handler:legacy": "bash conformance/run.sh server-handler-legacy"
+    "test:conformance:server:handler:legacy": "bash conformance/run.sh server-handler-legacy",
+    "build:daemon": "tsx ./scripts/build-daemon.ts"
   }
 }

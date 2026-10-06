@@ -10,7 +10,17 @@ import {
   type JsonValue,
   type OperationRecord
 } from "../store/store";
+import type { ContainerAgent } from "./agents";
+import type { ContainerEgressBinding } from "./egress";
 import { DaemonLink, waitHealthy, type Hello, type LinkError } from "./link";
+import {
+  AGENT_USER,
+  MANAGED_ENTRYPOINT,
+  MANAGED_IMAGE,
+  setUp,
+  setupKey,
+  type SetupSnapshot
+} from "./managed-image";
 import {
   chunkEntries,
   CONTAINER_ENV,
@@ -80,6 +90,7 @@ const WAKE_FN = "wake";
 const IDLE_FN = "idle";
 const IDLE_JOB = "container-idle";
 const RUNTIME_KEY = "container-harness:runtime";
+const SNAPSHOT_KEY = "container-harness:snapshot";
 const MESSAGES = "messages";
 const ENGINE = "engine";
 const OPEN: readonly ("queued" | "running")[] = ["queued", "running"];
@@ -120,28 +131,18 @@ function sessionOfJob(payload: unknown): ContainerSessionId | undefined {
     : undefined;
 }
 
-/**
- * How the container is launched. With the `durable_object` scheduling
- * policy, `image` is a value from `ctx.container.images`.
- */
-export type ContainerLaunch = {
-  /** The image, such as `ctx.container.images.agent`. */
-  readonly image?: string;
-  /** Instance size, such as `"standard-2"`. Default: the platform's. */
-  readonly instance?:
-    | string
-    | {
-        readonly vcpu: number;
-        readonly memoryMib: number;
-        readonly diskMb: number;
-      };
-  /** Command and arguments. Default: the image's entrypoint. */
-  readonly entrypoint?: readonly string[];
-  /** Environment for the daemon and the agent it runs. */
-  readonly env?: { readonly [name: string]: string };
-  /** Whether the container may reach the Internet. */
-  readonly enableInternet: boolean;
-};
+/** A container instance size: a named type or a custom shape. */
+export type ContainerInstance =
+  | "lite"
+  | "standard-1"
+  | "standard-2"
+  | "standard-3"
+  | "standard-4"
+  | {
+      readonly vcpu: number;
+      readonly memoryMib: number;
+      readonly diskMb: number;
+    };
 
 /** Applied to a session the first time it is created. */
 export type ContainerSessionDefaults = {
@@ -155,8 +156,22 @@ export type ContainerSessionDefaults = {
 export type ContainerHarnessOptions = {
   /** The object's container: `ctx.container`. */
   readonly container: Container;
-  /** How to start it. */
-  readonly launch: ContainerLaunch;
+  /** What runs in it: `claudeCode()`, `codex()`, or `containerAgent()`. */
+  readonly agent: ContainerAgent;
+  /**
+   * `ctx.exports.ContainerEgress`, which adds the agent's credentials to
+   * its requests outside the container. Required when the agent has egress
+   * routes (every preset with `access` does). Export `ContainerEgress` from
+   * your Worker's main module.
+   */
+  readonly egress?: ContainerEgressBinding;
+  /** Instance size. Default `standard-1`. */
+  readonly instance?: ContainerInstance;
+  /**
+   * Whether the container may reach the Internet beyond its egress routes.
+   * Managed images need it to install their CLI. Default true.
+   */
+  readonly enableInternet?: boolean;
   /** Where the daemon listens. Default 8080. */
   readonly port?: number;
   /**
@@ -167,7 +182,7 @@ export type ContainerHarnessOptions = {
   readonly idleTimeoutMs?: number;
   /** How long a new container may take to answer. Default 60 seconds. */
   readonly startTimeoutMs?: number;
-  /** What a new session starts with. */
+  /** What a new session starts with. Default: the agent's model and options. */
   readonly defaults?: ContainerSessionDefaults;
   /**
    * What happens to an operation whose container stopped while it ran.
@@ -308,10 +323,14 @@ function errorText(error: unknown): string {
  * Object, behind the same interface as `PiHarness`: `harness.prompt()`,
  * `harness.sessions`, `harness.session(id)`.
  *
- * The harness does not know which agent runs in the container. The image
- * runs the harness daemon (`@cloudflare/harness-daemon`) with an adapter,
- * such as Claude Code or Codex, and the two speak the wire in `./protocol`. Any
- * adapter that produces `ContainerEvent`s works.
+ * The harness does not know which agent runs in the container. A preset
+ * (`claudeCode()`, `codex()`) says what to install and which adapter the
+ * daemon runs; the harness builds the container from
+ * `cloudflare/debian-trixie` on first use, installs the bundled daemon, and
+ * snapshots the result, so there is no image to build. Credentials stay
+ * outside: the CLI calls a placeholder host, and `ContainerEgress` adds the
+ * real key. Any adapter that produces `ContainerEvent`s works, including
+ * one in an image of your own (`containerAgent()`).
  *
  * The object owns the durable record, in a `HarnessStore`: sessions,
  * operations, the transcript, and the adapter's resume state. The container
@@ -373,7 +392,7 @@ export class ContainerHarness extends LifecycleCapability {
   }
 
   /**
-   * @param options - The container, how to launch it, and session defaults.
+   * @param options - The container, the agent, and session defaults.
    */
   constructor(options: ContainerHarnessOptions) {
     super("container-harness");
@@ -381,6 +400,12 @@ export class ContainerHarness extends LifecycleCapability {
     if (!Number.isFinite(idle) || idle <= 0 || idle > 6 * 60 * 60_000) {
       throw new Error(
         "ContainerHarness idleTimeoutMs must be positive and at most six hours"
+      );
+    }
+    if (options.agent.egress.length > 0 && options.egress === undefined) {
+      throw new Error(
+        "ContainerHarness: the agent's credentials need `egress: ctx.exports.ContainerEgress`, " +
+          'and `export { ContainerEgress } from "agents/harness/container"` in your main module'
       );
     }
     this.#options = options;
@@ -984,6 +1009,91 @@ export class ContainerHarness extends LifecycleCapability {
     );
   }
 
+  /**
+   * Start the agent's container and route its egress. A managed image is
+   * restored from this setup's snapshot when there is one, and set up (and
+   * snapshotted) when there is not.
+   */
+  async #start(
+    container: Container,
+    runtime: Runtime
+  ): Promise<
+    | { readonly _tag: "ok"; readonly value: "image" | "snapshot" | "setup" }
+    | { readonly _tag: "err"; readonly error: LinkError }
+  > {
+    const agent = this.#options.agent;
+    const image = agent.image;
+    const env: Record<string, string> = {
+      ...agent.env,
+      CF_HARNESS_ADAPTER: agent.adapter,
+      [CONTAINER_ENV.token]: runtime.token,
+      [CONTAINER_ENV.runtimeId]: runtime.runtimeId,
+      [CONTAINER_ENV.port]: String(this.#options.port ?? DAEMON_PORT)
+    };
+    const base = {
+      enableInternet: this.#options.enableInternet ?? true,
+      instance: this.#options.instance ?? "standard-1"
+    };
+    let from: "image" | "snapshot" | "setup" = "image";
+    let key: string | undefined;
+    let options: Record<string, unknown>;
+    if (image.kind === "custom") {
+      options = { ...base, env, image: image.image };
+    } else {
+      key = await setupKey(image.setup);
+      const stored =
+        await this.lifecycle.storage.get<SetupSnapshot>(SNAPSHOT_KEY);
+      const managed = {
+        ...base,
+        env: { ...env, CF_HARNESS_USER: AGENT_USER },
+        entrypoint: [...MANAGED_ENTRYPOINT]
+      };
+      if (stored?.key === key) {
+        from = "snapshot";
+        options = { ...managed, containerSnapshot: stored.snapshot };
+      } else {
+        from = "setup";
+        options = { ...managed, image: MANAGED_IMAGE };
+      }
+    }
+    try {
+      // SAFETY: `image`, `instance` and `containerSnapshot` are start
+      // options of the `durable_object` scheduling policy that this
+      // workers-types version does not declare yet; the rest is
+      // `ContainerStartupOptions` as is.
+      container.start(options as unknown as ContainerStartupOptions);
+      await container.setInactivityTimeout(this.#idleTimeoutMs);
+      this.#timeoutSet = true;
+      // Intercepts last for one container: route them on every start,
+      // before the CLI can make a request.
+      const egress = this.#options.egress;
+      if (egress && agent.egress.length > 0) {
+        const binding = egress({ props: { routes: agent.egress } });
+        for (const route of agent.egress) {
+          await container.interceptOutboundHttp(route.host, binding);
+        }
+      }
+    } catch (error) {
+      return {
+        _tag: "err",
+        error: { _tag: "unreachable", message: errorText(error) }
+      };
+    }
+    if (from === "setup" && image.kind === "managed" && key !== undefined) {
+      const setup = await setUp(container, image.setup, key);
+      if (setup._tag === "err") {
+        return {
+          _tag: "err",
+          error: { _tag: "unreachable", message: setup.error.message }
+        };
+      }
+      if (setup.snapshot) {
+        await this.lifecycle.storage.put(SNAPSHOT_KEY, setup.snapshot);
+      }
+    }
+    return { _tag: "ok", value: from };
+  }
+
   async #launch(container: Container): Promise<RuntimeResult> {
     const runtime: Runtime = {
       runtimeId: crypto.randomUUID(),
@@ -994,33 +1104,10 @@ export class ContainerHarness extends LifecycleCapability {
     await this.lifecycle.storage.put(RUNTIME_KEY, runtime);
     this.#runtime = runtime;
     this.#broadcast({ type: "container", status: "starting" });
-    const launch = this.#options.launch;
-    const options = {
-      enableInternet: launch.enableInternet,
-      env: {
-        ...launch.env,
-        [CONTAINER_ENV.token]: runtime.token,
-        [CONTAINER_ENV.runtimeId]: runtime.runtimeId,
-        [CONTAINER_ENV.port]: String(this.#options.port ?? DAEMON_PORT)
-      },
-      ...(launch.image === undefined ? {} : { image: launch.image }),
-      ...(launch.instance === undefined ? {} : { instance: launch.instance }),
-      ...(launch.entrypoint === undefined
-        ? {}
-        : { entrypoint: [...launch.entrypoint] })
-    };
-    try {
-      // SAFETY: `image` and `instance` are start options of the
-      // `durable_object` scheduling policy that this workers-types version
-      // does not declare yet; the rest is `ContainerStartupOptions` as is.
-      container.start(options as ContainerStartupOptions);
-      await container.setInactivityTimeout(this.#idleTimeoutMs);
-      this.#timeoutSet = true;
-    } catch (error) {
-      return {
-        _tag: "err",
-        error: { _tag: "unreachable", message: errorText(error) }
-      };
+    const started = await this.#start(container, runtime);
+    if (started._tag === "err") {
+      await container.destroy().catch(() => undefined);
+      return started;
     }
     const healthy = await waitHealthy(
       this.#port(),
@@ -1028,6 +1115,10 @@ export class ContainerHarness extends LifecycleCapability {
       () => container.running
     );
     if (healthy._tag === "err") {
+      if (started.value === "snapshot") {
+        // The snapshot may have expired: set up afresh next time.
+        await this.lifecycle.storage.delete(SNAPSHOT_KEY);
+      }
       await container.destroy().catch(() => undefined);
       return healthy;
     }
@@ -1415,7 +1506,7 @@ export class ContainerHarness extends LifecycleCapability {
 
   #initial(): SessionState {
     return {
-      model: this.#options.defaults?.model,
+      model: this.#options.defaults?.model ?? this.#options.agent.model,
       cursor: null,
       generation: 1,
       messagesFrom: 0,
@@ -1424,7 +1515,8 @@ export class ContainerHarness extends LifecycleCapability {
   }
 
   #settings(state: SessionState): ContainerSettings {
-    const options = this.#options.defaults?.options;
+    const options =
+      this.#options.defaults?.options ?? this.#options.agent.options;
     return {
       ...(state.model === undefined ? {} : { model: state.model }),
       ...(options === undefined ? {} : { options })

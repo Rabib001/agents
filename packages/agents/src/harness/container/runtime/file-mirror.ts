@@ -16,7 +16,7 @@
 
 import { mkdir, open, readdir, rm, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import type { JsonValue } from "agents/harness/container/daemon";
+import type { JsonValue } from "../protocol";
 import { isJsonObject } from "./json";
 
 /** Most bytes of one file in one entry. */

@@ -3,23 +3,26 @@
 An early-access, server-only example of `ContainerHarness` from
 `agents/harness/container`: Claude Code or Codex runs in a Cloudflare
 Container, and a plain Durable Object drives it with the same interface as
-`PiHarness`.
+`PiHarness`. There is no Dockerfile, and no credentials enter the container.
 
 ```ts
+import { ContainerHarness, claudeCode } from "agents/harness/container";
+
+// Adds the credentials outside the container; export it from the main module.
+export { ContainerEgress } from "agents/harness/container";
+
 export class CodingAgent extends DurableObject<Env> {
   readonly harness = new ContainerHarness({
     container: this.ctx.container,
-    launch: {
-      image: this.ctx.container.images.agent,
-      instance: "standard-2",
-      enableInternet: true,
-      env: {
-        CF_HARNESS_ADAPTER: "codex", // or "claude-code"
-        OPENAI_BASE_URL: `${this.env.AI_GATEWAY_URL}/openai`,
-        OPENAI_API_KEY: this.env.AI_GATEWAY_TOKEN
+    egress: this.ctx.exports.ContainerEgress,
+    agent: claudeCode({
+      access: {
+        gateway: {
+          url: this.env.AI_GATEWAY_URL,
+          token: this.env.AI_GATEWAY_TOKEN
+        }
       }
-    },
-    defaults: { model: "gpt-5.1" }
+    })
   });
 
   readonly lifecycle = Lifecycle.install(this).use(this.harness);
@@ -29,38 +32,50 @@ export class CodingAgent extends DurableObject<Env> {
 const { text } = await this.harness.prompt("Add a test for parse()");
 ```
 
-Switching CLIs changes the adapter name, the model, and the credentials.
-Nothing else in the object changes.
+`codex({ access })` instead of `claudeCode({ access })` runs Codex. Nothing
+else changes. `access` can also be `{ apiKey }` to call the provider directly.
 
-## What runs where
+```jsonc
+// wrangler.jsonc
+"containers": [
+  { "class_name": "CodingAgent", "scheduling_policy": "durable_object" }
+]
+```
 
-- **The Durable Object** owns everything durable, in a `HarnessStore`
-  (`agents/harness/store`): sessions, operations, the transcript, and the
-  CLI's own session files.
-- **The container** runs `@cloudflare/harness-daemon` (`container/Dockerfile`).
-  Each turn is one CLI process: `claude -p --output-format stream-json` or
-  `codex exec --json`. The daemon turns the CLI's output into the harness's
-  messages and events, and mirrors the CLI's session directory
-  (`~/.claude/projects`, `~/.codex/sessions`) to the object as the turn runs.
+## What happens
 
-The container is disposable. It starts on the first prompt and stops five
-minutes after the last one (`idleTimeoutMs`). The next prompt starts a new
-container, restores the session files, and the CLI resumes its own session
-(`--resume`, `codex exec resume`). If the container dies mid-run, that run
-settles `unanswered` with `container_lost`, queued prompts run in the
-replacement, and the session continues. If the object is evicted mid-run,
-the container keeps working; the object's wake job reattaches and replays
-what it missed.
+- **First start.** The harness starts `cloudflare/debian-trixie`, uses
+  `exec()` to create an unprivileged `agent` user and install the CLI
+  (`npm install -g @anthropic-ai/claude-code`), writes its bundled daemon
+  into the container, and snapshots the filesystem. Later starts restore the
+  snapshot and are ready in a few seconds. Changing the preset (a new CLI
+  version, extra `setup` steps) sets up afresh.
+- **Each turn** is one CLI process run as `agent`: `claude -p
+--output-format stream-json` or `codex exec --json`. The daemon turns its
+  output into the harness's messages and events, and mirrors the CLI's
+  session files (`~/.claude/projects`, `~/.codex/sessions`) to the object as
+  the turn runs.
+- **Credentials.** The CLI is pointed at a placeholder host
+  (`http://anthropic.harness.internal`) with a placeholder key. The harness
+  intercepts that host with `ctx.container.interceptOutboundHttp()`, and
+  `ContainerEgress`, running in your Worker, swaps in the real credentials
+  and forwards to AI Gateway. `env` in the container shows only the
+  placeholder.
+- **Recovery.** The container stops five minutes after the last prompt
+  (`idleTimeoutMs`). The next prompt starts a new one from the snapshot,
+  restores the session files, and the CLI resumes its own session. If the
+  container dies mid-run, that run settles `unanswered` with
+  `container_lost` and the session continues. If the object is evicted
+  mid-run, the container keeps working; the object reattaches and replays
+  what it missed.
 
 ## Another CLI
 
-Any CLI that runs one turn per process and prints JSON lines fits. Write an
-entrypoint with `cliAdapter` and build it into the image instead of the
-bundled `main.ts`:
+Build an image whose entrypoint serves the daemon with `cliAdapter`, and use
+`containerAgent({ image: ctx.container.images.agent, adapter: "my-agent" })`:
 
 ```ts
-import { serveFromEnv } from "@cloudflare/harness-daemon";
-import { cliAdapter } from "@cloudflare/harness-daemon/cli";
+import { cliAdapter, serveFromEnv } from "agents/harness/container/runtime";
 
 await serveFromEnv(
   cliAdapter({
@@ -90,15 +105,13 @@ put an AI Gateway token in `.dev.vars`:
 ```sh
 echo "AI_GATEWAY_TOKEN=..." > .dev.vars
 pnpm install
-pnpm run dev                                  # Claude Code
-pnpm run dev -- --var HARNESS_ADAPTER:codex   # Codex
-pnpm run dev -- --var HARNESS_ADAPTER:echo    # no model, no credentials
+pnpm run dev                                # Claude Code
+pnpm run dev -- --var HARNESS_AGENT:codex   # Codex
+pnpm run dev -- --var HARNESS_AGENT:echo    # no model, no credentials
 ```
 
 With [Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/)
-the gateway token is the only credential: no Anthropic or OpenAI key enters
-the container. The container can still read the gateway token, and the CLI's
-tools run arbitrary commands, so scope the token to this use.
+the gateway token is the only credential, and it never leaves the object.
 
 Exercise the agent named `demo`:
 

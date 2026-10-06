@@ -23,21 +23,23 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { chown, mkdir, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
   inputText,
-  type AdapterContext,
-  type AdapterSession,
-  type AdapterTurn,
-  type ContainerAdapter,
   type ContainerEvent,
   type ContainerOutcome,
   type ContainerSettings,
   type JsonValue
-} from "agents/harness/container/daemon";
+} from "../protocol";
+import {
+  type AdapterContext,
+  type AdapterSession,
+  type AdapterTurn,
+  type ContainerAdapter
+} from "../daemon-core";
 import { FileMirror } from "./file-mirror";
 import { isJsonObject } from "./json";
 
@@ -96,6 +98,12 @@ export type CliAdapterOptions = {
   readonly homes?: string;
   /** How often a running turn's state is persisted. Default 5 seconds. */
   readonly syncIntervalMs?: number;
+  /**
+   * Run the CLI as this user, and give it its home. For a daemon running
+   * as root: Claude Code, for one, refuses to skip permission prompts as
+   * root. Default: the daemon's own user.
+   */
+  readonly user?: { readonly uid: number; readonly gid: number };
 };
 
 /** How long a CLI has to exit after an interrupt before it is killed. */
@@ -115,6 +123,20 @@ function foldState(entries: readonly JsonValue[]): CliState {
     }
   }
   return state;
+}
+
+/** Give a directory tree to a user. */
+async function chownTree(
+  path: string,
+  user: { readonly uid: number; readonly gid: number }
+): Promise<void> {
+  await chown(path, user.uid, user.gid);
+  const entries = await readdir(path, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const child = join(path, entry.name);
+    if (entry.isDirectory()) await chownTree(child, user);
+    else await chown(child, user.uid, user.gid).catch(() => undefined);
+  }
 }
 
 function homeFor(root: string, session: string): string {
@@ -161,10 +183,12 @@ class CliSession implements AdapterSession {
     const [file, ...args] = command.argv;
     if (file === undefined) throw new Error("The CLI command is empty");
 
+    const user = this.#options.user;
     const child = spawn(file, args, {
       cwd: this.#options.cwd ?? "/workspace",
       env: { ...process.env, ...command.env, HOME: this.#home },
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      ...(user ? { uid: user.uid, gid: user.gid } : {})
     });
     child.stdin.on("error", () => undefined);
     child.stdin.end(command.stdin ?? "");
@@ -264,6 +288,7 @@ export function cliAdapter(options: CliAdapterOptions): ContainerAdapter {
       await mkdir(home, { recursive: true });
       const mirror = new FileMirror(home, options.stateDirs ?? []);
       await mirror.restore(context.restore);
+      if (options.user) await chownTree(home, options.user);
       return new CliSession(options, context, home, mirror);
     }
   };

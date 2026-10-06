@@ -12,8 +12,8 @@
  *
  * Nothing here touches Node, a socket library or a model SDK. The transport
  * hands the daemon a `DaemonSocket` per connection and feeds it messages;
- * `@cloudflare/harness-daemon` does that over `ws` in a container, and the
- * tests do it over a `WebSocketPair` in Workers.
+ * `./runtime` does that over HTTP in a container, and the tests do it over
+ * a `WebSocketPair` in Workers.
  *
  * Modelled on the AI SDK's harness bridge (`runBridge`): the runtime owns
  * the transport, sequencing and replay, and an adapter owns only the agent.

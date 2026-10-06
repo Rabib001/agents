@@ -14,7 +14,7 @@ import type {
   ContainerOutcome,
   ContainerPart,
   JsonValue
-} from "agents/harness/container/daemon";
+} from "../../protocol";
 
 type Block = {
   readonly type: string;

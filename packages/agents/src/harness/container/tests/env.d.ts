@@ -8,6 +8,9 @@ declare namespace Cloudflare {
     CONTAINER_RETRY_TEST: DurableObjectNamespace<
       import("./worker").ContainerRetryTestObject
     >;
+    CONTAINER_MANAGED_TEST: DurableObjectNamespace<
+      import("./worker").ContainerManagedTestObject
+    >;
     HARNESS_STORE_TEST: DurableObjectNamespace<
       import("./store-fixture").HarnessStoreTestObject
     >;

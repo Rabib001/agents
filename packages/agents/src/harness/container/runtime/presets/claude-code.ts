@@ -8,8 +8,8 @@
  * token is the key).
  */
 
-import type { JsonValue } from "agents/harness/container/daemon";
-import { cliAdapter, type CliAdapterOptions } from "../cli-adapter";
+import type { JsonValue } from "../../protocol";
+import type { CliAdapterOptions } from "../cli-adapter";
 import { isJsonObject, stringsOf } from "../json";
 import { ClaudeProjection, type SdkMessageLike } from "./claude-code-events";
 
@@ -102,6 +102,3 @@ export const claudeCodeCli: CliAdapterOptions = {
     };
   }
 };
-
-/** The Claude Code adapter. */
-export const claudeCode = cliAdapter(claudeCodeCli);

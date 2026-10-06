@@ -3,6 +3,8 @@ import { Lifecycle } from "../../../lifecycle";
 import { echoAdapter, type ContainerAdapter } from "../daemon-core";
 import { setWakeTimingForTests } from "../harness";
 import { inputText } from "../protocol";
+import { claudeCode, containerAgent, type ContainerAgent } from "../agents";
+import { forwardEgress, type ContainerEgressBinding } from "../egress";
 import {
   ContainerHarness,
   type ContainerMessage,
@@ -65,11 +67,17 @@ function texts(messages: readonly ContainerMessage[]): string[] {
 /** A harness over the fake container, with the given policy for lost work. */
 function makeHarness(
   container: FakeContainer,
-  onContainerLost: "fail" | "retry"
+  onContainerLost: "fail" | "retry",
+  agent: ContainerAgent = containerAgent({
+    image: "test-image",
+    adapter: "test"
+  }),
+  egress?: ContainerEgressBinding
 ): ContainerHarness {
   const harness = new ContainerHarness({
     container: container.asContainer(),
-    launch: { image: "test-image", enableInternet: false },
+    agent,
+    ...(egress ? { egress } : {}),
     idleTimeoutMs: IDLE_MS,
     startTimeoutMs: 1_000,
     defaults: { model: "small" },
@@ -82,11 +90,24 @@ function makeHarness(
 /** Real Durable Object fixture: a container harness over a fake container. */
 export class ContainerHarnessTestObject extends DurableObject<Cloudflare.Env> {
   readonly fake = containerFor(this.ctx.id, testAdapter);
-  readonly harness = makeHarness(this.fake, this.policy());
+  readonly harness = makeHarness(
+    this.fake,
+    this.policy(),
+    this.agent(),
+    this.egress()
+  );
   readonly lifecycle = Lifecycle.install(this).use(this.harness);
 
   policy(): "fail" | "retry" {
     return "fail";
+  }
+
+  agent(): ContainerAgent {
+    return containerAgent({ image: "test-image", adapter: "test" });
+  }
+
+  egress(): ContainerEgressBinding | undefined {
+    return undefined;
   }
 
   async prompt(text: string, session?: string) {
@@ -225,6 +246,98 @@ export class ContainerHarnessTestObject extends DurableObject<Cloudflare.Env> {
   /** Make the idle stop fire `ms` after the last work, instead of a minute. */
   shortenIdle(ms: number): void {
     setWakeTimingForTests(this.harness, { idleStopMs: ms });
+  }
+}
+
+/** Upstream requests the fixture's egress made, newest last. */
+const upstream: { url: string; headers: Record<string, string> }[] = [];
+
+/** An egress binding that forwards to a recording fetch, not the network. */
+const recordingEgress: ContainerEgressBinding = ({ props }) => {
+  const fetcher = {
+    fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+      forwardEgress(
+        new Request(input, init),
+        props.routes,
+        async (url, forwarded) => {
+          upstream.push({
+            url: String(url),
+            headers: Object.fromEntries(
+              new Headers(forwarded?.headers).entries()
+            )
+          });
+          return new Response("upstream ok");
+        }
+      )
+  };
+  // SAFETY: the harness and the tests call only `fetch` on an intercept.
+  return fetcher as unknown as Fetcher;
+};
+
+/**
+ * The Claude Code preset over the fake container: a managed image set up
+ * at runtime, with its credentials routed through egress.
+ */
+export class ContainerManagedTestObject extends ContainerHarnessTestObject {
+  override agent(): ContainerAgent {
+    return claudeCode({
+      access: {
+        gateway: {
+          url: "https://gateway.example/v1/acct/gw",
+          token: "gw-secret"
+        }
+      },
+      version: "9.9.9"
+    });
+  }
+
+  override egress(): ContainerEgressBinding {
+    return recordingEgress;
+  }
+
+  /** What the harness did to the fake container. */
+  setup() {
+    return {
+      starts: this.fake.starts,
+      snapshots: this.fake.snapshots,
+      lastStart: this.fake.lastStart,
+      env: this.fake.lastEnv,
+      execs: this.fake.execs.map((each) => ({
+        cmd: each.cmd.join(" "),
+        stdinBytes: each.stdin.length
+      })),
+      intercepts: [...this.fake.intercepts.keys()]
+    };
+  }
+
+  failExec(match: string | null): void {
+    this.fake.failExec = match ?? undefined;
+  }
+
+  failSnapshotRestore(fail: boolean): void {
+    this.fake.failSnapshotRestore = fail;
+  }
+
+  /** Call through the container's intercept, as the CLI would. */
+  async egressProbe() {
+    const intercept = this.fake.intercepts.get("anthropic.harness.internal");
+    if (!intercept) throw new Error("no intercept");
+    const response = await intercept.fetch(
+      "http://anthropic.harness.internal/v1/messages?beta=true",
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": "harness-egress",
+          "content-type": "application/json"
+        },
+        body: "{}"
+      }
+    );
+    return {
+      status: response.status,
+      body: await response.text(),
+      upstream: upstream.at(-1)
+    };
   }
 }
 
