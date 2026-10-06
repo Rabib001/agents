@@ -77,13 +77,51 @@ gateway).
   `ContainerEgress`, running in your Worker, swaps in the real credentials
   and forwards to `baseUrl`. `env` in the container shows only the
   placeholder.
-- **Recovery.** The container stops five minutes after the last prompt
-  (`idleTimeoutMs`). The next prompt starts a new one from the snapshot,
-  restores the session files, and the CLI resumes its own session. If the
-  container dies mid-run, that run settles `unanswered` with
-  `container_lost` and the session continues. If the object is evicted
+- **Recovery.** Five minutes after the last prompt (`idleTimeoutMs`) the
+  harness snapshots the container, workspace included, and stops it. The
+  next prompt starts a new one from that snapshot and the CLI resumes its
+  own session. If the container dies mid-run, that run settles `unanswered`
+  with `container_lost`, the next container starts from the last snapshot
+  (workspace edits since then are lost), and the session continues from
+  the CLI's session files, which are saved as each turn runs. If the object is evicted
   mid-run, the container keeps working; the object reattaches and replays
   what it missed.
+
+## Customise the CLI
+
+Everything goes in `setup`: steps run once, on the first start, and their
+result is kept in the snapshot. A step with `user: "agent"` runs as the user
+the CLI runs as, in its home, and every session's home starts as a copy of
+that home. So installing your plugins and mods, skills, `CLAUDE.md` or
+`~/.claude/settings.json` works as it does on your laptop:
+
+```ts
+claudeCode({
+  baseUrl: `${this.env.AI_GATEWAY_URL}/anthropic`,
+  apiKey: this.env.AI_GATEWAY_TOKEN,
+  setup: [
+    // your own Claude Code build, over the pinned release (as root)
+    {
+      name: "my fork",
+      command: ["npm", "install", "-g", "github:you/claude-code#mods"]
+    },
+    // your plugins and mods, from your own marketplace (as the agent)
+    {
+      name: "my mods",
+      user: "agent",
+      command: [
+        "sh",
+        "-c",
+        "claude plugin marketplace add you/my-mods && claude plugin install token-chart@my-mods"
+      ]
+    }
+  ]
+});
+```
+
+Changing `setup` sets the container up afresh on its next start. A token a
+step uses (to clone a private repository, say) stays in the snapshot, where
+the agent can read it: prefer public sources or short-lived URLs.
 
 ## Another CLI
 
@@ -116,10 +154,10 @@ await serveFromEnv(
 ## Run
 
 Containers need Docker locally. Set `AI_GATEWAY_URL` in `wrangler.jsonc` and
-put an AI Gateway token in `.dev.vars`:
+put an AI Gateway token in `.env` (see `.env.example`):
 
 ```sh
-echo "AI_GATEWAY_TOKEN=..." > .dev.vars
+cp .env.example .env   # then fill in AI_GATEWAY_TOKEN
 pnpm install
 pnpm run dev
 ```
@@ -151,3 +189,8 @@ curl $B/            # container, sessions, pending operations
 
 Add `?session=<id>` to address a session other than the root; `POST
 $B/sessions` creates one.
+
+The routes have no authentication, to keep the example short. They drive an
+agent that runs commands and spends model credit: put your own auth in front
+of them before deploying anywhere public. The container can reach the
+Internet (setup needs it); the credentials still never enter it.

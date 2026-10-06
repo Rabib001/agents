@@ -47,7 +47,8 @@ describe("ContainerHarness", () => {
     expect(container).toMatchObject({
       running: true,
       starts: 1,
-      inactivityTimeoutMs: 60_000
+      // The idle stop (a minute) runs before the platform stop (plus a grace).
+      inactivityTimeoutMs: 180_000
     });
     expect(container.env.CF_HARNESS_TOKEN).toMatch(/^[0-9a-f]{64}$/);
     expect(container.env.CF_HARNESS_PORT).toBe("8080");
@@ -162,6 +163,17 @@ describe("ContainerHarness", () => {
     ]);
   });
 
+  it("delivers events that arrive between the snapshot and start()", async () => {
+    const stub = fresh();
+    expect(await stub.watchLate("hello")).toEqual([
+      "message",
+      "operation-start",
+      "text-delta",
+      "message",
+      "operation-end"
+    ]);
+  });
+
   it("stops the container when idle and resumes the session in a new one", async () => {
     const stub = fresh();
     await stub.shortenIdle(50);
@@ -247,7 +259,8 @@ describe("ContainerHarness", () => {
     expect((await stub.prompt("two")).text).toBe("echo: two (turn 2)");
     expect(await stub.container()).toMatchObject({
       starts: 1,
-      inactivityTimeoutMs: 60_000
+      // The idle stop (a minute) runs before the platform stop (plus a grace).
+      inactivityTimeoutMs: 180_000
     });
   });
 
@@ -290,6 +303,33 @@ describe("ContainerHarness", () => {
     });
     await stub.failStarts(false);
     expect((await stub.prompt("later")).text).toBe("echo: later (turn 1)");
+  });
+
+  it("counts failed starts durably, so an evicted object still gives up", async () => {
+    const name = crypto.randomUUID();
+    let stub = fresh(name);
+    await stub.failStarts(true);
+    const receipt = await stub.submit("hello");
+    await until(async () => {
+      await runDurableObjectAlarm(stub);
+      return (await stub.container()).startAttempts >= 2;
+    }, "two failed starts");
+    // Evict between attempts: the count must survive in the wake job.
+    await abortAllDurableObjects();
+    stub = fresh(name);
+    await until(async () => {
+      await runDurableObjectAlarm(stub);
+      return (await stub.pending()).length === 0;
+    }, "the start failures to give up");
+    expect(await stub.wait(receipt.operationId)).toMatchObject({
+      status: "unanswered",
+      reason: "container_unavailable"
+    });
+    // Five attempts in all, counted across the eviction (one in flight
+    // when the object was aborted may not have reached `start()`).
+    const { startAttempts } = await stub.container();
+    expect(startAttempts).toBeGreaterThanOrEqual(4);
+    expect(startAttempts).toBeLessThanOrEqual(5);
   });
 
   it("forks a session that continues the parent's history as a branch", async () => {

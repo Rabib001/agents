@@ -18,12 +18,19 @@ import {
  */
 export class FakeContainer {
   starts = 0;
+  /** Every `start()` call, including ones that threw. */
+  startAttempts = 0;
   inactivityTimeoutMs: number | undefined;
   lastEnv: Record<string, string> = {};
   /** Options of the last `start()`, without `env`. */
   lastStart: StartRecord = {};
   /** Commands `exec()` ran, with their stdin, since the last start. */
-  execs: { readonly cmd: readonly string[]; readonly stdin: string }[] = [];
+  execs: {
+    readonly cmd: readonly string[];
+    readonly stdin: string;
+    readonly user: string | undefined;
+    readonly home: string | undefined;
+  }[] = [];
   /** Hosts intercepted on the running container, with their handlers. */
   intercepts = new Map<string, Fetcher>();
   snapshots = 0;
@@ -47,6 +54,7 @@ export class FakeContainer {
   }
 
   start(options?: StartRecord & { env?: Record<string, string> }): void {
+    this.startAttempts += 1;
     if (this.failStarts) throw new Error("no capacity");
     const env = options?.env ?? {};
     this.starts += 1;
@@ -65,7 +73,11 @@ export class FakeContainer {
 
   async exec(
     cmd: string[],
-    options?: { stdin?: ReadableStream }
+    options?: {
+      stdin?: ReadableStream;
+      user?: string;
+      env?: Record<string, string>;
+    }
   ): Promise<{
     exitCode: Promise<number>;
     output(): Promise<{
@@ -79,7 +91,12 @@ export class FakeContainer {
     const stdin = options?.stdin
       ? await new Response(options.stdin).text()
       : "";
-    this.execs.push({ cmd: [...cmd], stdin });
+    this.execs.push({
+      cmd: [...cmd],
+      stdin,
+      user: options?.user,
+      home: options?.env?.HOME
+    });
     const exitCode =
       this.failExec !== undefined && cmd.join(" ").includes(this.failExec)
         ? 1

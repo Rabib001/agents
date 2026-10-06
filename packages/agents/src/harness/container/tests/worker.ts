@@ -196,6 +196,24 @@ export class ContainerHarnessTestObject extends DurableObject<Cloudflare.Env> {
     return types;
   }
 
+  /**
+   * Open the event stream, run a whole turn, and only then start the
+   * stream: the turn's events must still arrive.
+   */
+  async watchLate(text: string): Promise<string[]> {
+    const stream = await this.harness.session().events();
+    const { operationId } = await this.harness.submit(text);
+    await this.harness.wait(operationId);
+    const types: string[] = [];
+    stream.start((events) => {
+      for (const event of events) {
+        if (event.type !== "container") types.push(event.type);
+      }
+    });
+    await stream.stop();
+    return types;
+  }
+
   /** Resolve once an operation has started running in the container. */
   async running(operationId: string): Promise<void> {
     for (let i = 0; i < 200; i++) {
@@ -217,6 +235,7 @@ export class ContainerHarnessTestObject extends DurableObject<Cloudflare.Env> {
     return {
       running: this.fake.running,
       starts: this.fake.starts,
+      startAttempts: this.fake.startAttempts,
       inactivityTimeoutMs: this.fake.inactivityTimeoutMs,
       env: this.fake.lastEnv
     };
@@ -284,7 +303,14 @@ export class ContainerManagedTestObject extends ContainerHarnessTestObject {
       baseUrl: "https://gateway.example/v1/acct/gw/anthropic",
       apiKey: "gw-secret",
       headers: { "cf-aig-metadata": '{"project":"tests"}' },
-      version: "9.9.9"
+      version: "9.9.9",
+      setup: [
+        {
+          name: "my mods",
+          user: "agent",
+          command: ["claude", "plugin", "install", "french@my-mods"]
+        }
+      ]
     });
   }
 
@@ -301,7 +327,9 @@ export class ContainerManagedTestObject extends ContainerHarnessTestObject {
       env: this.fake.lastEnv,
       execs: this.fake.execs.map((each) => ({
         cmd: each.cmd.join(" "),
-        stdinBytes: each.stdin.length
+        stdinBytes: each.stdin.length,
+        user: each.user ?? "root",
+        home: each.home ?? ""
       })),
       intercepts: [...this.fake.intercepts.keys()]
     };

@@ -113,8 +113,10 @@ export type ContainerSessionSnapshot = {
 
 /**
  * A session's events: the snapshot taken when the stream was opened, then
- * every event after it, in batches. Live: events reach listeners in the
- * isolate that runs the harness.
+ * every event after it, in batches, including any that arrived before
+ * `start()`. An event may repeat what the snapshot already shows; messages
+ * are keyed by id. Live: events reach listeners in the isolate that runs
+ * the harness. Call `stop()` when done, started or not.
  */
 export type ContainerEventStream = {
   readonly snapshot: ContainerSessionSnapshot;

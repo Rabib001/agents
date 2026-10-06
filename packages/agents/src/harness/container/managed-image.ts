@@ -30,12 +30,26 @@ export const MANAGED_ENTRYPOINT: readonly string[] = [
   `while [ ! -f ${DAEMON_DIR}/ready ]; do sleep 0.1; done; exec node ${DAEMON_DIR}/daemon.mjs`
 ];
 
-/** One setup command, run as root in the fresh container. */
+/**
+ * One setup command, run once in the fresh container and kept in its
+ * snapshot.
+ *
+ * Steps run as root by default. A step with `user: "agent"` runs as the
+ * user the CLI runs as, with `HOME=/home/agent`: anything it puts in that
+ * home (installed plugins and mods, `~/.claude/settings.json`, skills,
+ * `~/.codex/config.toml`) is in every session's home, because each session
+ * home starts as a copy of it.
+ */
 export type SetupStep = {
   /** What the step does, for error messages. */
   readonly name: string;
   readonly command: readonly string[];
+  /** Who runs it. Default `root`. */
+  readonly user?: "root" | "agent";
 };
+
+/** The agent user's home, which every session home starts as a copy of. */
+export const AGENT_HOME = "/home/agent";
 
 /** Steps every managed agent needs before its own. */
 export const BASE_STEPS: readonly SetupStep[] = [
@@ -81,7 +95,7 @@ const OUTPUT_KEPT = 2_000;
 export async function setupKey(steps: readonly SetupStep[]): Promise<string> {
   const text = JSON.stringify({
     image: MANAGED_IMAGE,
-    steps: steps.map((step) => step.command),
+    steps: steps.map((step) => [step.user ?? "root", ...step.command]),
     daemon: DAEMON_VERSION
   });
   const digest = await crypto.subtle.digest(
@@ -99,8 +113,13 @@ async function run(
   step: SetupStep,
   stdin?: string
 ): Promise<SetupError | undefined> {
+  const asAgent = step.user === "agent";
   const process = await container.exec([...step.command], {
-    env: { HOME: "/root", DEBIAN_FRONTEND: "noninteractive" },
+    env: {
+      HOME: asAgent ? AGENT_HOME : "/root",
+      DEBIAN_FRONTEND: "noninteractive"
+    },
+    ...(asAgent ? { user: AGENT_USER, cwd: AGENT_HOME } : {}),
     stderr: "combined",
     ...(stdin === undefined ? {} : { stdin: new Blob([stdin]).stream() })
   });

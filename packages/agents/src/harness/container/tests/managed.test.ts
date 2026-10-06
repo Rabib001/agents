@@ -29,13 +29,24 @@ describe("ContainerHarness with a managed image", () => {
       expect.stringContaining("useradd"),
       expect.stringContaining("git"),
       "npm install --global --no-fund --no-audit @anthropic-ai/claude-code@9.9.9",
+      "claude plugin install french@my-mods",
       expect.stringContaining("cat > /opt/harness/daemon.mjs")
+    ]);
+    // Setup runs as root, except steps for the agent's own home.
+    expect(first.execs.map((each) => [each.user, each.home])).toEqual([
+      ["root", "/root"],
+      ["root", "/root"],
+      ["root", "/root"],
+      ["10001:10001", "/home/agent"],
+      ["root", "/root"]
     ]);
     // The daemon is written from the bundle the harness carries.
     expect(first.execs.at(-1)?.stdinBytes).toBeGreaterThan(1_000);
     expect(first.snapshots).toBe(1);
 
-    await stub.stopContainer();
+    // A container that dies keeps nothing: the next one starts from the
+    // setup snapshot, without setting up again.
+    await stub.crashContainer();
     expect((await stub.prompt("again")).status).toBe("done");
     const second = await stub.setup();
     expect(second.lastStart).toMatchObject({
@@ -44,6 +55,35 @@ describe("ContainerHarness with a managed image", () => {
     expect(second.lastStart).not.toHaveProperty("image");
     expect(second.execs).toEqual([]);
     expect(second.snapshots).toBe(1);
+  });
+
+  it("snapshots the workspace when it stops the container, and starts from it", async () => {
+    const stub = fresh();
+    await stub.prompt("one");
+    // The harness stops the container (idle or `stop()`): the whole
+    // filesystem, workspace included, is snapshotted first.
+    await stub.stopContainer();
+    expect((await stub.setup()).snapshots).toBe(2);
+    await stub.prompt("two");
+    const next = await stub.setup();
+    expect(next.lastStart).toMatchObject({
+      containerSnapshot: { id: "snapshot-2" }
+    });
+    expect(next.execs).toEqual([]);
+  });
+
+  it("falls back to the setup snapshot when the workspace snapshot does not restore", async () => {
+    const stub = fresh();
+    await stub.prompt("one");
+    await stub.stopContainer();
+    await stub.failSnapshotRestore(true);
+    const receipt = await stub.submit("two");
+    await until(async () => {
+      await runDurableObjectAlarm(stub);
+      return (await stub.setup()).lastStart.image !== undefined;
+    }, "a fresh setup after both snapshots failed");
+    await stub.failSnapshotRestore(false);
+    expect((await stub.wait(receipt.operationId)).status).toBe("done");
   });
 
   it("keeps credentials out of the container and adds them at the egress", async () => {
@@ -152,6 +192,32 @@ describe("forwardEgress", () => {
       async () => new Response("should not be called")
     );
     expect(response.status).toBe(403);
+  });
+});
+
+describe("ContainerHarness options", () => {
+  it("refuses an egress upstream that is not https", async () => {
+    const { ContainerHarness } = await import("../harness");
+    const { containerAgent } = await import("../agents");
+    const agent = containerAgent({
+      image: "x",
+      adapter: "a",
+      egress: [
+        {
+          host: "api.harness.internal",
+          upstream: "http://plain.example",
+          headers: {},
+          strip: []
+        }
+      ]
+    });
+    // SAFETY: the constructor only checks its options; nothing is called on
+    // the container or the egress before it throws.
+    const container = {} as unknown as Container;
+    const egress = () => ({}) as unknown as Fetcher;
+    expect(() => new ContainerHarness({ container, agent, egress })).toThrow(
+      /must be an https URL/
+    );
   });
 });
 

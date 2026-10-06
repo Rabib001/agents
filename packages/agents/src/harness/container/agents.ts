@@ -108,7 +108,11 @@ export type ClaudeCodeAgentOptions = ProviderConnection & {
   readonly allowedTools?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly maxTurns?: number;
-  /** More setup steps, run after the install. */
+  /**
+   * More setup steps, run after the install and kept in the snapshot. Use
+   * `user: "agent"` to install plugins, mods or settings in the agent's
+   * home, which every session home starts from.
+   */
   readonly setup?: readonly SetupStep[];
 };
 
@@ -170,7 +174,11 @@ export type CodexAgentOptions = ProviderConnection & {
   readonly version?: string;
   /** Extra `-c key=value` config overrides. */
   readonly config?: readonly string[];
-  /** More setup steps, run after the install. */
+  /**
+   * More setup steps, run after the install and kept in the snapshot. Use
+   * `user: "agent"` to install plugins, mods or settings in the agent's
+   * home, which every session home starts from.
+   */
   readonly setup?: readonly SetupStep[];
 };
 

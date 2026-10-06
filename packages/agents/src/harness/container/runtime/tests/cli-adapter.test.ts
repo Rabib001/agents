@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,9 +9,10 @@ import { cliAdapter } from "../cli-adapter";
 const FAKE = join(import.meta.dirname, "fake-cli.mjs");
 
 /** The fake CLI as an adapter, with session homes under `homes`. */
-function fakeAdapter(homes: string) {
+function fakeAdapter(homes: string, skeleton?: string) {
   return cliAdapter({
     id: "fake",
+    ...(skeleton ? { skeleton } : {}),
     stateDirs: [".fake/sessions"],
     cwd: tmpdir(),
     homes,
@@ -138,6 +139,46 @@ describe("cliAdapter", () => {
     expect(await fresh.run(turn("2", "y"))).toMatchObject({
       text: "turn 1: y"
     });
+  });
+
+  it("starts each session home from the skeleton, with session files restored on top", async () => {
+    const skeleton = await mkdtemp(join(tmpdir(), "skeleton-"));
+    await mkdir(join(skeleton, ".fake", "plugins"), { recursive: true });
+    await writeFile(join(skeleton, ".fake", "plugins", "mod.json"), "{}");
+    await mkdir(join(skeleton, ".fake", "sessions"), { recursive: true });
+    await writeFile(join(skeleton, ".fake", "sessions", "stale.jsonl"), "x");
+    // Session homes inside the skeleton are not copied into each other.
+    const homes = join(skeleton, ".harness", "sessions");
+
+    const first = recorder("s");
+    const session = await fakeAdapter(homes, skeleton).open(first.context);
+    await session.run(turn("1", "one"));
+    const home = (await readdir(homes))[0] ?? "";
+    expect(
+      await readFile(join(homes, home, ".fake", "plugins", "mod.json"), "utf8")
+    ).toBe("{}");
+    expect(
+      await readdir(join(homes, home, ".harness")).catch(() => [])
+    ).toEqual([]);
+    // The skeleton's session files do not leak into the session's.
+    expect(await readdir(join(homes, home, ".fake", "sessions"))).not.toContain(
+      "stale.jsonl"
+    );
+
+    // A new container: the skeleton again, and the session resumed.
+    const next = recorder("s", first.persisted);
+    const fresh = await mkdtemp(join(tmpdir(), "homes-"));
+    const resumed = await fakeAdapter(fresh, skeleton).open(next.context);
+    expect(await resumed.run(turn("2", "two"))).toMatchObject({
+      text: "turn 2: two"
+    });
+    const freshHome = (await readdir(fresh))[0] ?? "";
+    expect(
+      await readFile(
+        join(fresh, freshHome, ".fake", "plugins", "mod.json"),
+        "utf8"
+      )
+    ).toBe("{}");
   });
 
   it("reports a CLI that exits without an outcome", async () => {

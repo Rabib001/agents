@@ -36,8 +36,16 @@ const adapter: ContainerAdapter | undefined =
     : cli
       ? cliAdapter({
           ...cli,
-          // The CLI's user must reach its home: not under root's.
-          ...(user ? { user, homes: "/home/agent/.harness/sessions" } : {})
+          // The CLI's user must reach its home, not under root's; each
+          // session home starts as a copy of the agent's own, where setup
+          // installed plugins, mods and settings.
+          ...(user
+            ? {
+                user,
+                homes: "/home/agent/.harness/sessions",
+                skeleton: "/home/agent"
+              }
+            : {})
         })
       : undefined;
 if (!adapter) {

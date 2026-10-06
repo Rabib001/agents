@@ -39,6 +39,9 @@ abstract class CodingAgent extends DurableObject<Env> {
 
   readonly lifecycle = Lifecycle.install(this).use(this.harness);
 
+  // These routes have no authentication, to keep the example short. Each
+  // one drives an agent that runs commands and spends model credit: put
+  // your own auth in front of them before you deploy anywhere public.
   async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const route = url.pathname.split("/").slice(4).join("/");

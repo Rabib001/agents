@@ -91,6 +91,24 @@ const IDLE_FN = "idle";
 const IDLE_JOB = "container-idle";
 const RUNTIME_KEY = "container-harness:runtime";
 const SNAPSHOT_KEY = "container-harness:snapshot";
+const WORKSPACE_KEY = "container-harness:workspace";
+
+/**
+ * How much longer than `idleTimeoutMs` the platform keeps an inactive
+ * object's container. The harness's own idle stop runs first, so it can
+ * snapshot the workspace before the container goes.
+ */
+const IDLE_GRACE_MS = 2 * 60_000;
+
+/** The longest inactivity timeout the platform accepts. */
+const MAX_INACTIVITY_MS = 6 * 60 * 60_000;
+
+/** A snapshot of a container's whole filesystem, and what it was built from. */
+type WorkspaceSnapshot = {
+  /** The setup key (managed) or image (custom) the container ran. */
+  readonly key: string;
+  readonly snapshot: { readonly id: string };
+};
 const MESSAGES = "messages";
 const ENGINE = "engine";
 const OPEN: readonly ("queued" | "running")[] = ["queued", "running"];
@@ -122,13 +140,30 @@ function wakeJobId(session: ContainerSessionId): string {
   return `container-wake:${session}`;
 }
 
-function sessionOfJob(payload: unknown): ContainerSessionId | undefined {
-  return typeof payload === "object" &&
-    payload !== null &&
-    "session" in payload &&
-    typeof payload.session === "string"
-    ? payload.session
-    : undefined;
+/**
+ * A wake job's payload: its session, and the consecutive failed starts so
+ * far. The count lives in the job, not in memory, so an object evicted
+ * between attempts still gives up after `MAX_START_FAILURES`.
+ */
+type WakePayload = {
+  readonly session: ContainerSessionId;
+  readonly failures: number;
+};
+
+function parseWakePayload(payload: unknown): WakePayload | undefined {
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    !("session" in payload) ||
+    typeof payload.session !== "string"
+  ) {
+    return undefined;
+  }
+  const failures =
+    "failures" in payload && typeof payload.failures === "number"
+      ? payload.failures
+      : 0;
+  return { session: payload.session, failures };
 }
 
 /** A container instance size: a named type or a custom shape. */
@@ -169,15 +204,21 @@ export type ContainerHarnessOptions = {
   readonly instance?: ContainerInstance;
   /**
    * Whether the container may reach the Internet beyond its egress routes.
-   * Managed images need it to install their CLI. Default true.
+   * Default true: managed images need it to install their CLI in setup.
+   * Commands the agent runs can then reach any host (credentials still
+   * stay outside: only the egress routes carry them). Set false, with a
+   * `containerAgent()` image that has its CLI installed, to allow nothing
+   * but the egress routes.
    */
   readonly enableInternet?: boolean;
   /** Where the daemon listens. Default 8080. */
   readonly port?: number;
   /**
    * How long the container keeps running after its last work, in
-   * milliseconds. The next prompt starts a new one and resumes the session
-   * in it. Default five minutes; at most six hours.
+   * milliseconds. The harness then snapshots its filesystem (workspace
+   * included) and stops it; the next prompt starts a new one from that
+   * snapshot and resumes the session in it. Default five minutes; at most
+   * six hours.
    */
   readonly idleTimeoutMs?: number;
   /** How long a new container may take to answer. Default 60 seconds. */
@@ -377,7 +418,6 @@ export class ContainerHarness extends LifecycleCapability {
   readonly #attaching = new Map<ContainerSessionId, Promise<AttachResult>>();
   /** In-memory waits on the container, per session, inside an alarm's work. */
   readonly #waits = new Map<ContainerSessionId, Promise<void>>();
-  readonly #failures = new Map<ContainerSessionId, number>();
   /** Wakes `wait()` callers when an operation settles. */
   readonly #settleWaiters = new Map<string, Set<() => void>>();
   /** Wakes the wake job when a session's work or link changes. */
@@ -401,6 +441,17 @@ export class ContainerHarness extends LifecycleCapability {
       throw new Error(
         "ContainerHarness idleTimeoutMs must be positive and at most six hours"
       );
+    }
+    for (const route of options.agent.egress) {
+      // Credentials ride these requests: never send them in the clear.
+      if (
+        !URL.canParse(route.upstream) ||
+        new URL(route.upstream).protocol !== "https:"
+      ) {
+        throw new Error(
+          `ContainerHarness: egress upstream for ${route.host} must be an https URL, got ${JSON.stringify(route.upstream)}`
+        );
+      }
     }
     if (options.agent.egress.length > 0 && options.egress === undefined) {
       throw new Error(
@@ -439,12 +490,18 @@ export class ContainerHarness extends LifecycleCapability {
       // A restarted object starts without the container's inactivity
       // timeout; without it, the container stops shortly after the object
       // goes quiet.
-      await container.setInactivityTimeout(this.#idleTimeoutMs);
+      await container.setInactivityTimeout(this.#inactivityTimeoutMs());
       this.#timeoutSet = true;
     }
     const open = store.operations({ status: OPEN });
     const sessions = new Set(open.map((operation) => operation.session));
-    for (const session of sessions) await this.#wake(session);
+    for (const session of sessions) {
+      // A wake job that is already queued carries its failure count: keep
+      // it. Only a session that lost its job gets a new one.
+      if (!this.lifecycle.jobs.get(wakeJobId(session))) {
+        await this.#wake(session);
+      }
+    }
     if (sessions.size === 0 && container.running) await this.#scheduleIdle();
   }
 
@@ -454,8 +511,8 @@ export class ContainerHarness extends LifecycleCapability {
   ): Promise<LifecycleJobOutcome | void> {
     if (context.job.fn === IDLE_FN) return this.#idleStep();
     if (context.job.fn !== WAKE_FN) return;
-    const session = sessionOfJob(context.job.payload);
-    if (session !== undefined) return this.#wakeStep(session);
+    const wake = parseWakePayload(context.job.payload);
+    if (wake !== undefined) return this.#wakeStep(wake);
   }
 
   /** Close the session sockets. Durable state and the container are untouched. */
@@ -584,8 +641,10 @@ export class ContainerHarness extends LifecycleCapability {
    */
   async stop(): Promise<void> {
     await this.dispose();
-    if (this.#options.container.running) {
-      await this.#options.container.destroy();
+    const container = this.#options.container;
+    if (container.running) {
+      await this.#saveWorkspace(container);
+      await container.destroy();
     }
     this.#broadcast({ type: "container", status: "stopped" });
     const store = await this.#openStore();
@@ -661,11 +720,9 @@ export class ContainerHarness extends LifecycleCapability {
       input: inputJson(input),
       meta: metaJson(meta)
     });
-    if (accepted) {
-      this.#failures.delete(session);
-      // Hand it over now if a socket is open; the wake does it otherwise.
-      this.#deliver(store, session);
-    }
+    // Hand it over now if a socket is open; the wake does it otherwise.
+    if (accepted) this.#deliver(store, session);
+    // A new submission starts the failure count over.
     await this.#wake(session);
     return { operationId, session, accepted };
   }
@@ -792,30 +849,47 @@ export class ContainerHarness extends LifecycleCapability {
 
   /** @internal */
   async events(session: ContainerSessionId): Promise<ContainerEventStream> {
+    // Listen before taking the snapshot, and hold what arrives until
+    // `start()`: nothing between the snapshot and the first listener is
+    // lost. An event may repeat what the snapshot already shows (messages
+    // are keyed by id, so applying one twice is harmless).
+    let buffered: ContainerSessionEvent[] | undefined = [];
+    let listener:
+      | ((events: readonly ContainerSessionEvent[]) => void)
+      | undefined;
+    let stopped = false;
+    const relay = (events: readonly ContainerSessionEvent[]) => {
+      if (buffered) buffered.push(...events);
+      else listener?.(events);
+    };
+    let set = this.#listeners.get(session);
+    if (!set) {
+      set = new Set();
+      this.#listeners.set(session, set);
+    }
+    set.add(relay);
     const snapshot: ContainerSessionSnapshot = {
       session,
       messages: await this.transcript(session),
       pending: await this.pending({ session }),
       busy: await this.busy(session)
     };
-    let listener:
-      | ((events: readonly ContainerSessionEvent[]) => void)
-      | undefined;
     return {
       snapshot,
       start: (next) => {
-        if (listener) throw new Error("The event stream has already started");
-        listener = next;
-        let set = this.#listeners.get(session);
-        if (!set) {
-          set = new Set();
-          this.#listeners.set(session, set);
+        if (listener || stopped) {
+          throw new Error("The event stream has already started");
         }
-        set.add(next);
+        listener = next;
+        const held = buffered ?? [];
+        buffered = undefined;
+        if (held.length > 0) next(held);
       },
       stop: async () => {
-        if (listener) this.#listeners.get(session)?.delete(listener);
+        stopped = true;
+        buffered = undefined;
         listener = undefined;
+        this.#listeners.get(session)?.delete(relay);
       }
     };
   }
@@ -823,12 +897,17 @@ export class ContainerHarness extends LifecycleCapability {
   // ── The wake ─────────────────────────────────────────────────────────────
 
   /** Schedule the session's wake job now, or pull it forward. */
-  #wake(session: ContainerSessionId, time = Date.now()): Promise<unknown> {
+  #wake(
+    session: ContainerSessionId,
+    time = Date.now(),
+    failures = 0
+  ): Promise<unknown> {
+    const payload: WakePayload = { session, failures };
     return this.lifecycle.jobs.push({
       id: wakeJobId(session),
       fn: WAKE_FN,
       time,
-      payload: { session },
+      payload,
       singleflight: true,
       recoveryLoop: true
     });
@@ -840,7 +919,8 @@ export class ContainerHarness extends LifecycleCapability {
    * alarm's tracked work and returns a heartbeat. It completes when the
    * session has no open operations.
    */
-  async #wakeStep(session: ContainerSessionId): Promise<LifecycleJobOutcome> {
+  async #wakeStep(wake: WakePayload): Promise<LifecycleJobOutcome> {
+    const { session } = wake;
     const heartbeat = { rescheduleAt: Date.now() + this.#heartbeatMs };
     if (this.#waits.has(session)) return heartbeat;
     const store = await this.#openStore();
@@ -849,18 +929,18 @@ export class ContainerHarness extends LifecycleCapability {
       this.#detach(session);
       return undefined;
     }
-    const drive = this.#drive(store, session)
+    const drive = this.#drive(store, wake)
       .catch((error: unknown) => {
         const detail = { session, error: errorText(error) };
         console.error("[container-harness] drive failed", detail);
         this.lifecycle.events.emit("container:drive_error", detail);
-        return Date.now() + this.#retryBaseMs;
+        return { at: Date.now() + this.#retryBaseMs, failures: wake.failures };
       })
       .then((next) => {
         this.#waits.delete(session);
-        // Re-check at `next`: more work may have arrived, the socket may
+        // Re-check at `next.at`: more work may have arrived, the socket may
         // have closed, or a failed start backs off.
-        void this.#wake(session, next);
+        void this.#wake(session, next.at, next.failures);
       });
     this.#waits.set(session, drive);
     // The drive runs past this dispatch, inside the alarm's work, so the
@@ -875,34 +955,38 @@ export class ContainerHarness extends LifecycleCapability {
    */
   async #drive(
     store: HarnessStore,
-    session: ContainerSessionId
-  ): Promise<number> {
+    wake: WakePayload
+  ): Promise<{ readonly at: number; readonly failures: number }> {
+    const { session } = wake;
+    // Count the attempt before making it: an eviction in the middle of a
+    // start must still count towards giving up.
+    const failures = wake.failures + 1;
+    await this.#wake(session, Date.now() + this.#heartbeatMs, failures);
     const attached = await this.#attach(session);
     if (attached._tag === "err") {
-      const failures = (this.#failures.get(session) ?? 0) + 1;
-      this.#failures.set(session, failures);
       const detail = { session, failures, error: attached.error.message };
       console.warn("[container-harness] attach failed", detail);
       this.lifecycle.events.emit("container:attach_error", detail);
       if (failures < MAX_START_FAILURES) {
-        return (
-          Date.now() + Math.min(this.#retryBaseMs * 2 ** (failures - 1), 30_000)
+        const backoff = Math.min(
+          this.#retryBaseMs * 2 ** (failures - 1),
+          30_000
         );
+        return { at: Date.now() + backoff, failures };
       }
       // Give the work up rather than retry forever; the next submit tries again.
-      this.#failures.delete(session);
       for (const operation of store.operations({ session, status: OPEN })) {
         this.#settle(store, session, operation.id, {
           status: "unanswered",
           reason: "container_unavailable"
         });
       }
-      return Date.now();
+      return { at: Date.now(), failures: 0 };
     }
-    this.#failures.delete(session);
+    await this.#wake(session, Date.now() + this.#heartbeatMs, 0);
     this.#deliver(store, session);
     await this.#waitForWork(store, session);
-    return Date.now();
+    return { at: Date.now(), failures: 0 };
   }
 
   /**
@@ -936,6 +1020,11 @@ export class ContainerHarness extends LifecycleCapability {
     }
   }
 
+  /** The platform's inactivity timeout: past the harness's own idle stop. */
+  #inactivityTimeoutMs(): number {
+    return Math.min(this.#idleTimeoutMs + IDLE_GRACE_MS, MAX_INACTIVITY_MS);
+  }
+
   /** The idle stop: destroy the container once nothing has used it for `idleTimeoutMs`. */
   async #idleStep(): Promise<LifecycleJobOutcome> {
     const store = await this.#openStore();
@@ -943,6 +1032,7 @@ export class ContainerHarness extends LifecycleCapability {
     const container = this.#options.container;
     if (!container.running) return undefined;
     await this.dispose();
+    await this.#saveWorkspace(container);
     await container.destroy();
     this.#broadcast({ type: "container", status: "stopped" });
     return undefined;
@@ -979,7 +1069,7 @@ export class ContainerHarness extends LifecycleCapability {
     const known = await this.#runtimeRecord();
     if (container.running && known) {
       if (!this.#timeoutSet) {
-        await container.setInactivityTimeout(this.#idleTimeoutMs);
+        await container.setInactivityTimeout(this.#inactivityTimeoutMs());
         this.#timeoutSet = true;
       }
       // A container that already runs has had time to boot; one that does
@@ -1018,7 +1108,7 @@ export class ContainerHarness extends LifecycleCapability {
     container: Container,
     runtime: Runtime
   ): Promise<
-    | { readonly _tag: "ok"; readonly value: "image" | "snapshot" | "setup" }
+    | { readonly _tag: "ok"; readonly value: StartedFrom }
     | { readonly _tag: "err"; readonly error: LinkError }
   > {
     const agent = this.#options.agent;
@@ -1034,13 +1124,21 @@ export class ContainerHarness extends LifecycleCapability {
       enableInternet: this.#options.enableInternet ?? true,
       instance: this.#options.instance ?? "standard-1"
     };
-    let from: "image" | "snapshot" | "setup" = "image";
+    let from: StartedFrom = "image";
     let key: string | undefined;
     let options: Record<string, unknown>;
+    const workspace =
+      await this.lifecycle.storage.get<WorkspaceSnapshot>(WORKSPACE_KEY);
+    const baseKey = await this.#baseKey();
     if (image.kind === "custom") {
-      options = { ...base, env, image: image.image };
+      if (workspace?.key === baseKey) {
+        from = "workspace";
+        options = { ...base, env, containerSnapshot: workspace.snapshot };
+      } else {
+        options = { ...base, env, image: image.image };
+      }
     } else {
-      key = await setupKey(image.setup);
+      key = baseKey;
       const stored =
         await this.lifecycle.storage.get<SetupSnapshot>(SNAPSHOT_KEY);
       const managed = {
@@ -1048,7 +1146,12 @@ export class ContainerHarness extends LifecycleCapability {
         env: { ...env, CF_HARNESS_USER: AGENT_USER },
         entrypoint: [...MANAGED_ENTRYPOINT]
       };
-      if (stored?.key === key) {
+      if (workspace?.key === key) {
+        // The filesystem as the last container left it: the workspace,
+        // the CLI and its setup, all in one.
+        from = "workspace";
+        options = { ...managed, containerSnapshot: workspace.snapshot };
+      } else if (stored?.key === key) {
         from = "snapshot";
         options = { ...managed, containerSnapshot: stored.snapshot };
       } else {
@@ -1062,7 +1165,7 @@ export class ContainerHarness extends LifecycleCapability {
       // workers-types version does not declare yet; the rest is
       // `ContainerStartupOptions` as is.
       container.start(options as unknown as ContainerStartupOptions);
-      await container.setInactivityTimeout(this.#idleTimeoutMs);
+      await container.setInactivityTimeout(this.#inactivityTimeoutMs());
       this.#timeoutSet = true;
       // Intercepts last for one container: route them on every start,
       // before the CLI can make a request.
@@ -1094,6 +1197,36 @@ export class ContainerHarness extends LifecycleCapability {
     return { _tag: "ok", value: from };
   }
 
+  /** What a container's filesystem is built from: the setup, or the image. */
+  async #baseKey(): Promise<string> {
+    const image = this.#options.agent.image;
+    return image.kind === "managed"
+      ? setupKey(image.setup)
+      : `image:${image.image}`;
+  }
+
+  /**
+   * Snapshot the container's filesystem before the harness stops it, so the
+   * next container starts with the workspace as this one left it. A failed
+   * snapshot costs the workspace edits, never the stop.
+   */
+  async #saveWorkspace(container: Container): Promise<void> {
+    try {
+      const snapshot = await container.snapshotContainer({
+        name: `workspace-${Date.now()}`
+      });
+      const saved: WorkspaceSnapshot = {
+        key: await this.#baseKey(),
+        snapshot: { id: snapshot.id }
+      };
+      await this.lifecycle.storage.put(WORKSPACE_KEY, saved);
+    } catch (error) {
+      console.warn("[container-harness] workspace snapshot failed", {
+        error: errorText(error)
+      });
+    }
+  }
+
   async #launch(container: Container): Promise<RuntimeResult> {
     const runtime: Runtime = {
       runtimeId: crypto.randomUUID(),
@@ -1115,8 +1248,11 @@ export class ContainerHarness extends LifecycleCapability {
       () => container.running
     );
     if (healthy._tag === "err") {
-      if (started.value === "snapshot") {
-        // The snapshot may have expired: set up afresh next time.
+      // The snapshot may have expired: start from the next best thing
+      // next time (the setup snapshot, then a fresh setup).
+      if (started.value === "workspace") {
+        await this.lifecycle.storage.delete(WORKSPACE_KEY);
+      } else if (started.value === "snapshot") {
         await this.lifecycle.storage.delete(SNAPSHOT_KEY);
       }
       await container.destroy().catch(() => undefined);
@@ -1598,6 +1734,9 @@ export class ContainerHarness extends LifecycleCapability {
     });
   }
 }
+
+/** Where a container started from. */
+type StartedFrom = "image" | "workspace" | "snapshot" | "setup";
 
 type RuntimeResult =
   | { readonly _tag: "ok"; readonly value: Runtime }

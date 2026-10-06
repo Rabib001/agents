@@ -23,9 +23,17 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chown, mkdir, readdir } from "node:fs/promises";
+import { constants } from "node:fs";
+import {
+  chown,
+  copyFile,
+  mkdir,
+  readdir,
+  readlink,
+  symlink
+} from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import {
   inputText,
@@ -99,6 +107,12 @@ export type CliAdapterOptions = {
   /** How often a running turn's state is persisted. Default 5 seconds. */
   readonly syncIntervalMs?: number;
   /**
+   * A home to start every session home from: whatever setup installed
+   * there (plugins, mods, settings, skills) is in each session's home. The
+   * session files under `stateDirs` are then restored on top. Default: none.
+   */
+  readonly skeleton?: string;
+  /**
    * Run the CLI as this user, and give it its home. For a daemon running
    * as root: Claude Code, for one, refuses to skip permission prompts as
    * root. Default: the daemon's own user.
@@ -137,6 +151,42 @@ async function chownTree(
     if (entry.isDirectory()) await chownTree(child, user);
     else await chown(child, user.uid, user.gid).catch(() => undefined);
   }
+}
+
+/**
+ * Copy a skeleton home into a session home, keeping what is already there
+ * and leaving out the session homes themselves when they live inside it.
+ * (`fs.cp` refuses to copy a directory into its own subdirectory, filter
+ * or not, so this walks the tree itself.)
+ */
+async function seed(
+  skeleton: string,
+  home: string,
+  homes: string
+): Promise<void> {
+  const excluded = resolve(homes);
+  const walk = async (from: string, to: string): Promise<void> => {
+    const entries = await readdir(from, { withFileTypes: true }).catch(
+      () => []
+    );
+    for (const entry of entries) {
+      const source = join(from, entry.name);
+      const path = resolve(source);
+      if (path === excluded || path.startsWith(excluded + sep)) continue;
+      const target = join(to, entry.name);
+      if (entry.isDirectory()) {
+        await mkdir(target, { recursive: true });
+        await walk(source, target);
+      } else if (entry.isSymbolicLink()) {
+        await symlink(await readlink(source), target).catch(() => undefined);
+      } else if (entry.isFile()) {
+        await copyFile(source, target, constants.COPYFILE_EXCL).catch(
+          () => undefined
+        );
+      }
+    }
+  };
+  await walk(resolve(skeleton), home);
 }
 
 function homeFor(root: string, session: string): string {
@@ -288,6 +338,7 @@ export function cliAdapter(options: CliAdapterOptions): ContainerAdapter {
     async open(context) {
       const home = homeFor(homes, context.session);
       await mkdir(home, { recursive: true });
+      if (options.skeleton) await seed(options.skeleton, home, homes);
       const mirror = new FileMirror(home, options.stateDirs ?? []);
       await mirror.restore(context.restore);
       if (options.user) await chownTree(home, options.user);
