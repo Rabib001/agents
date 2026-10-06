@@ -70,6 +70,9 @@ const MAX_START_FAILURES = 5;
 /** How often a wait checks that the container still runs. */
 const CONTAINER_CHECK_MS = 2_000;
 
+/** How often `wait()` re-reads the store while it waits. */
+const SETTLE_POLL_MS = 1_000;
+
 /** Frames between acknowledgements, so the daemon can forget them. */
 const ACK_EVERY = 32;
 
@@ -191,8 +194,6 @@ type SessionState = {
   readonly messagesFrom: number;
   /** A note prepended to the first prompt after a reset. */
   readonly handoff: string | undefined;
-  /** The engine log is the parent's until the adapter persists its own. */
-  readonly fork: boolean;
 };
 
 /** What the harness keeps per operation, in the store's operation meta. */
@@ -235,8 +236,7 @@ function parseSessionState(value: JsonValue): SessionState {
     generation: typeof fields.generation === "number" ? fields.generation : 1,
     messagesFrom:
       typeof fields.messagesFrom === "number" ? fields.messagesFrom : 0,
-    handoff: typeof fields.handoff === "string" ? fields.handoff : undefined,
-    fork: fields.fork === true
+    handoff: typeof fields.handoff === "string" ? fields.handoff : undefined
   };
 }
 
@@ -246,8 +246,7 @@ function sessionStateJson(state: SessionState): JsonValue {
     cursor: state.cursor,
     generation: state.generation,
     messagesFrom: state.messagesFrom,
-    ...(state.handoff === undefined ? {} : { handoff: state.handoff }),
-    fork: state.fork
+    ...(state.handoff === undefined ? {} : { handoff: state.handoff })
   };
 }
 
@@ -311,7 +310,7 @@ function errorText(error: unknown): string {
  *
  * The harness does not know which agent runs in the container. The image
  * runs the harness daemon (`@cloudflare/harness-daemon`) with an adapter,
- * such as Claude Code, and the two speak the wire in `./protocol`. Any
+ * such as Claude Code or Codex, and the two speak the wire in `./protocol`. Any
  * adapter that produces `ContainerEvent`s works.
  *
  * The object owns the durable record, in a `HarnessStore`: sessions,
@@ -597,12 +596,12 @@ export class ContainerHarness extends LifecycleCapability {
         parent: from,
         state: sessionStateJson({
           ...this.#initial(),
-          model: parentState.model,
-          fork: true
+          model: parentState.model
         })
       });
-      // The fork sees the parent's active transcript and resumes the
-      // parent's agent session as a branch.
+      // The fork sees the parent's active transcript, and its adapter is
+      // restored from a copy of the parent's state, so it resumes the
+      // parent's agent session on a branch of its own.
       store.append(
         id,
         MESSAGES,
@@ -705,7 +704,8 @@ export class ContainerHarness extends LifecycleCapability {
       await this.#until(
         this.#settleWaiters,
         `${session}\0${operationId}`,
-        signal
+        signal,
+        SETTLE_POLL_MS
       );
     }
   }
@@ -746,8 +746,7 @@ export class ContainerHarness extends LifecycleCapability {
           ...state,
           generation: state.generation + 1,
           messagesFrom: store.end(session, MESSAGES),
-          handoff,
-          fork: false
+          handoff
         })
       );
     });
@@ -827,10 +826,9 @@ export class ContainerHarness extends LifecycleCapability {
     }
     const drive = this.#drive(store, session)
       .catch((error: unknown) => {
-        this.lifecycle.events.emit("container:drive_error", {
-          session,
-          error: errorText(error)
-        });
+        const detail = { session, error: errorText(error) };
+        console.error("[container-harness] drive failed", detail);
+        this.lifecycle.events.emit("container:drive_error", detail);
         return Date.now() + this.#retryBaseMs;
       })
       .then((next) => {
@@ -858,11 +856,9 @@ export class ContainerHarness extends LifecycleCapability {
     if (attached._tag === "err") {
       const failures = (this.#failures.get(session) ?? 0) + 1;
       this.#failures.set(session, failures);
-      this.lifecycle.events.emit("container:attach_error", {
-        session,
-        failures,
-        error: attached.error.message
-      });
+      const detail = { session, failures, error: attached.error.message };
+      console.warn("[container-harness] attach failed", detail);
+      this.lifecycle.events.emit("container:attach_error", detail);
       if (failures < MAX_START_FAILURES) {
         return (
           Date.now() + Math.min(this.#retryBaseMs * 2 ** (failures - 1), 30_000)
@@ -955,7 +951,6 @@ export class ContainerHarness extends LifecycleCapability {
 
   async #doEnsureRuntime(): Promise<RuntimeResult> {
     const container = this.#options.container;
-    const port = container.getTcpPort(this.#options.port ?? DAEMON_PORT);
     const known = await this.#runtimeRecord();
     if (container.running && known) {
       if (!this.#timeoutSet) {
@@ -965,7 +960,7 @@ export class ContainerHarness extends LifecycleCapability {
       // A container that already runs has had time to boot; one that does
       // not answer soon is replaced rather than waited on for a full start.
       const healthy = await waitHealthy(
-        port,
+        this.#port(),
         Math.min(this.#startTimeoutMs, ADOPT_TIMEOUT_MS),
         () => container.running
       );
@@ -976,10 +971,20 @@ export class ContainerHarness extends LifecycleCapability {
       // A container this object has no record of cannot be authenticated.
       await container.destroy().catch(() => undefined);
     }
-    return this.#launch(container, port);
+    return this.#launch(container);
   }
 
-  async #launch(container: Container, port: Fetcher): Promise<RuntimeResult> {
+  /**
+   * The daemon's port on the container that runs now. Taken fresh each
+   * time: a port taken before `start()` stays bound to no instance.
+   */
+  #port(): Fetcher {
+    return this.#options.container.getTcpPort(
+      this.#options.port ?? DAEMON_PORT
+    );
+  }
+
+  async #launch(container: Container): Promise<RuntimeResult> {
     const runtime: Runtime = {
       runtimeId: crypto.randomUUID(),
       token: `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll("-", "")
@@ -1018,7 +1023,7 @@ export class ContainerHarness extends LifecycleCapability {
       };
     }
     const healthy = await waitHealthy(
-      port,
+      this.#port(),
       this.#startTimeoutMs,
       () => container.running
     );
@@ -1050,9 +1055,7 @@ export class ContainerHarness extends LifecycleCapability {
   async #doAttach(session: ContainerSessionId): Promise<AttachResult> {
     const runtime = await this.#ensureRuntime();
     if (runtime._tag === "err") return runtime;
-    const port = this.#options.container.getTcpPort(
-      this.#options.port ?? DAEMON_PORT
-    );
+    const port = this.#port();
     // Frames can arrive while the link is being set up; they are applied
     // once the reconcile has fixed the cursor.
     let ready: Attached | undefined;
@@ -1138,8 +1141,7 @@ export class ContainerHarness extends LifecycleCapability {
         type: "open",
         generation: state.generation,
         settings: this.#settings(state),
-        restore: last,
-        fork: state.fork
+        restore: last
       });
     }
 
@@ -1312,7 +1314,6 @@ export class ContainerHarness extends LifecycleCapability {
             ENGINE,
             frame.entries.map((data) => ({ data }))
           );
-          if (state.fork) state = { ...state, fork: false };
           break;
         case "settle":
           settled = this.#settleInStore(
@@ -1418,8 +1419,7 @@ export class ContainerHarness extends LifecycleCapability {
       cursor: null,
       generation: 1,
       messagesFrom: 0,
-      handoff: undefined,
-      fork: false
+      handoff: undefined
     };
   }
 
@@ -1460,11 +1460,21 @@ export class ContainerHarness extends LifecycleCapability {
     if (set) for (const wake of set) wake();
   }
 
-  /** Resolve on the next notify for `key`, or reject when `signal` aborts. */
+  /**
+   * Resolve on the next notify for `key`, after `pollMs` if given, or
+   * reject when `signal` aborts.
+   *
+   * The poll matters for waits in a request: the notify comes from the
+   * alarm that drives the container, a different request context, and a
+   * request whose only pending work is a promise another context resolves
+   * is cancelled by the runtime as hung. A timer of its own keeps it alive,
+   * and the caller re-reads the store when it fires.
+   */
   #until<K>(
     waiters: Map<K, Set<() => void>>,
     key: K,
-    signal: AbortSignal | undefined
+    signal: AbortSignal | undefined,
+    pollMs?: number
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       let set = waiters.get(key);
@@ -1472,12 +1482,18 @@ export class ContainerHarness extends LifecycleCapability {
         set = new Set();
         waiters.set(key, set);
       }
-      const onAbort = () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const done = () => {
+        clearTimeout(timer);
         set?.delete(wake);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () => {
+        done();
         reject(signal?.reason);
       };
       const wake = () => {
-        signal?.removeEventListener("abort", onAbort);
+        done();
         resolve();
       };
       if (signal?.aborted) {
@@ -1486,6 +1502,7 @@ export class ContainerHarness extends LifecycleCapability {
       }
       signal?.addEventListener("abort", onAbort, { once: true });
       set.add(wake);
+      if (pollMs !== undefined) timer = setTimeout(wake, pollMs);
     });
   }
 }

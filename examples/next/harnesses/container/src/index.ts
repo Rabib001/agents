@@ -3,17 +3,24 @@ import { routeAgentRequest } from "agents";
 import { ContainerHarness } from "agents/harness/container";
 import { Lifecycle } from "agents/lifecycle";
 
+/** Each adapter's model, as the CLI names it. */
+const MODELS: Record<string, string> = {
+  "claude-code": "claude-sonnet-4-5",
+  codex: "gpt-5.1"
+};
+
 /**
- * One coding agent per object: Claude Code runs in this object's container,
- * and `ContainerHarness` drives it with the same interface as `PiHarness`.
+ * One coding agent per object: an agent CLI (Claude Code or Codex, picked
+ * by `HARNESS_ADAPTER`) runs in this object's container, and
+ * `ContainerHarness` drives it with the same interface as `PiHarness`.
  *
- * The object keeps everything durable (sessions, operations, the
- * transcript, and Claude Code's own session mirror). The container is
+ * The object keeps everything durable: sessions, operations, the
+ * transcript, and the CLI's own session files. The container is
  * disposable: it starts on the first prompt, stops five minutes after the
- * last one, and the next prompt starts a new one that resumes the Claude
- * Code session where it left off.
+ * last one, and the next prompt starts a new one in which the CLI resumes
+ * its session where it left off.
  */
-export class ClaudeCodeAgent extends DurableObject<Env> {
+export class CodingAgent extends DurableObject<Env> {
   readonly harness = new ContainerHarness({
     container: containerOf(this.ctx),
     launch: {
@@ -22,10 +29,7 @@ export class ClaudeCodeAgent extends DurableObject<Env> {
       enableInternet: true,
       env: launchEnv(this.env)
     },
-    defaults: {
-      model: "claude-sonnet-4-5",
-      options: { appendSystemPrompt: "Work in /workspace." }
-    }
+    defaults: { model: MODELS[this.env.HARNESS_ADAPTER] }
   });
 
   readonly lifecycle = Lifecycle.install(this).use(this.harness);
@@ -100,20 +104,24 @@ export class ClaudeCodeAgent extends DurableObject<Env> {
   }
 }
 
-/** The container's environment: the adapter, and Claude Code's credentials. */
+/**
+ * The container's environment: which CLI to run, and the AI Gateway both
+ * CLIs reach their provider through. With Unified Billing the gateway
+ * token is the only credential; no provider key enters the container.
+ */
 function launchEnv(env: Env): Record<string, string> {
-  const launch: Record<string, string> = {
+  return {
     CF_HARNESS_ADAPTER: env.HARNESS_ADAPTER,
-    ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY ?? ""
+    ANTHROPIC_BASE_URL: `${env.AI_GATEWAY_URL}/anthropic`,
+    ANTHROPIC_API_KEY: env.AI_GATEWAY_TOKEN,
+    OPENAI_BASE_URL: `${env.AI_GATEWAY_URL}/openai`,
+    OPENAI_API_KEY: env.AI_GATEWAY_TOKEN
   };
-  const baseUrl: string = env.ANTHROPIC_BASE_URL;
-  if (baseUrl) launch.ANTHROPIC_BASE_URL = baseUrl;
-  return launch;
 }
 
 function containerOf(ctx: DurableObjectState): Container {
   if (!ctx.container) {
-    throw new Error("ClaudeCodeAgent needs a container: see wrangler.jsonc");
+    throw new Error("CodingAgent needs a container: see wrangler.jsonc");
   }
   return ctx.container;
 }

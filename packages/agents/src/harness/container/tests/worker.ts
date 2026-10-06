@@ -17,9 +17,8 @@ export { HarnessStoreTestObject } from "./store-fixture";
 
 /**
  * The echo adapter, plus probes: `model?` answers the session's model,
- * `fork?` whether the session opened as a fork and how many entries it was
- * restored from, `bulk <n>` persists `n` entries of 10 kB, and `restored?`
- * how many entries the session was restored from.
+ * `bulk <n>` persists `n` entries of 10 kB, and `restored?` answers how
+ * many entries the session was restored from.
  */
 const testAdapter: ContainerAdapter = {
   id: "test",
@@ -43,12 +42,6 @@ const testAdapter: ContainerAdapter = {
         }
         if (text === "restored?") {
           return { status: "done", text: String(context.restore.length) };
-        }
-        if (text === "fork?") {
-          return {
-            status: "done",
-            text: `${context.fork} ${context.restore.length}`
-          };
         }
         return echo.run(turn);
       },

@@ -247,8 +247,6 @@ export type HostMessage =
        * after any sent in `restore` messages for this generation.
        */
       readonly restore: readonly JsonValue[];
-      /** `restore` came from the session this one was forked from. */
-      readonly fork: boolean;
     }
   /** Send every kept frame after `after`, then live frames. */
   | { readonly type: "replay"; readonly after: number }
@@ -459,14 +457,12 @@ export function parseHostMessage(text: string): HostMessage | undefined {
       return isCount(value.generation) &&
         isSettings(value.settings) &&
         Array.isArray(value.restore) &&
-        value.restore.every(isJson) &&
-        typeof value.fork === "boolean"
+        value.restore.every(isJson)
         ? {
             type: "open",
             generation: value.generation,
             settings: value.settings,
-            restore: value.restore,
-            fork: value.fork
+            restore: value.restore
           }
         : undefined;
     case "replay":

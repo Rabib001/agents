@@ -71,11 +71,18 @@ export class FakeContainer {
   }
 
   getTcpPort(_port: number): Fetcher {
+    // As on the platform, a port belongs to the instance that ran when it
+    // was taken: one taken before `start()` reaches no instance.
+    const bound = this.#daemon;
     const fetcher = {
       fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
         const request = new Request(input, init);
         const daemon = this.#daemon;
-        if (!daemon) throw new Error("container is not running");
+        if (!daemon || daemon !== bound) {
+          throw new Error(
+            "There is no container instance that can be provided to this Durable Object"
+          );
+        }
         const url = new URL(request.url);
         if (url.pathname === CONTAINER_HEALTH_PATH) {
           return new Response("ok");

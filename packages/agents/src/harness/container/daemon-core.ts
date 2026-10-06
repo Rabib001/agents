@@ -49,11 +49,6 @@ export type AdapterContext = {
    * another container, oldest first. Empty for a new session.
    */
   readonly restore: readonly JsonValue[];
-  /**
-   * `restore` is the history of the session this one was forked from: the
-   * adapter continues it as a new branch rather than as the same session.
-   */
-  readonly fork: boolean;
   /** Report an event. It belongs to the operation that is running, if any. */
   emit(event: ContainerEvent): void;
   /**
@@ -339,7 +334,7 @@ class DaemonSession {
         ? [...restoring.entries, ...message.restore]
         : message.restore;
     if (this.#opened) {
-      // A new generation (a reset, or a reopen after a fork) replaces the
+      // A new generation (a reset) replaces the
       // open session. The turn running in it cannot continue.
       this.#running?.controller.abort();
       await this.#opened.session.close().catch(() => undefined);
@@ -349,7 +344,6 @@ class DaemonSession {
       session: this.#id,
       settings: message.settings,
       restore,
-      fork: message.fork,
       emit: (event) =>
         this.#emit({
           kind: "event",

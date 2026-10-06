@@ -1,9 +1,9 @@
 /**
- * Claude Agent SDK messages, projected into `ContainerEvent`s.
+ * Claude Code's `stream-json` output, projected into `ContainerEvent`s.
+ * Each line is an Agent SDK message.
  *
  * Pure and SDK-free: it reads only the fields it needs, structurally, so it
- * can be tested with plain fixtures and survives SDK fields it does not
- * know. Subagent traffic (`parent_tool_use_id` set) is left out of the
+ * can be tested with plain fixtures and survives fields it does not know. Subagent traffic (`parent_tool_use_id` set) is left out of the
  * transcript; the top-level tool call that started the subagent carries its
  * result.
  */
@@ -149,11 +149,11 @@ export class ClaudeProjection {
       return { status: "done", text: message.result ?? "" };
     }
     const detail = message.errors?.join("; ") || message.result;
+    const subtype =
+      message.subtype && message.subtype !== "success" ? message.subtype : "";
     return {
       status: "unanswered",
-      reason: detail
-        ? `${message.subtype ?? "error"}: ${detail}`
-        : (message.subtype ?? "error")
+      reason: [subtype, detail].filter((part) => part).join(": ") || "error"
     };
   }
 

@@ -110,8 +110,7 @@ describe("harness daemon over ws", () => {
       type: "open",
       generation: 1,
       settings: {},
-      restore: [{ turn: 2 }],
-      fork: false
+      restore: [{ turn: 2 }]
     });
     first.send({ type: "replay", after: 0 });
     first.send({

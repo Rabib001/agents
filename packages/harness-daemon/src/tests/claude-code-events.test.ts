@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ClaudeProjection } from "../adapters/claude-projection";
+import { ClaudeProjection } from "../presets/claude-code-events";
 
 const NOW = 1_000;
 
@@ -169,5 +169,55 @@ describe("ClaudeProjection", () => {
         false
       )
     ).toEqual({ status: "unanswered", reason: "error_max_turns: too many" });
+    expect(
+      projection.outcome(
+        {
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          result: "API Error: 401"
+        },
+        false
+      )
+    ).toEqual({ status: "unanswered", reason: "API Error: 401" });
+  });
+});
+
+describe("claude-code preset", () => {
+  it("resumes the session id the CLI reported, reading the prompt from stdin", async () => {
+    const { claudeCodeCli } = await import("../presets/claude-code");
+    const turn = {
+      operationId: "op",
+      prompt: "hi",
+      settings: { model: "claude-sonnet-4-5" },
+      state: {}
+    };
+    const first = claudeCodeCli.command(turn);
+    expect(first.argv).not.toContain("--resume");
+    expect(first.stdin).toBe("hi");
+    const parser = claudeCodeCli.parser(turn);
+    expect(
+      parser.line(
+        JSON.stringify({ type: "system", subtype: "init", session_id: "s-1" })
+      )
+    ).toMatchObject({
+      state: { sessionId: "s-1" }
+    });
+    expect(
+      parser.line(
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "ok",
+          session_id: "s-1"
+        })
+      )
+    ).toMatchObject({ outcome: { status: "done", text: "ok" } });
+    const next = claudeCodeCli.command({
+      ...turn,
+      state: { sessionId: "s-1" }
+    });
+    expect(next.argv.join(" ")).toContain("--resume s-1");
   });
 });

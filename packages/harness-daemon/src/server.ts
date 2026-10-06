@@ -13,6 +13,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { Duplex } from "node:stream";
 import {
   CLOSE_UNAUTHORIZED,
+  CONTAINER_ENV,
   CONTAINER_HEALTH_PATH,
   CONTAINER_SESSION_PATH,
   CONTAINER_TOKEN_HEADER,
@@ -124,4 +125,37 @@ export async function serve(options: ServeOptions): Promise<DaemonServer> {
       await daemon.close();
     }
   };
+}
+
+/**
+ * Start the daemon with the identity, secret, and port the Durable Object
+ * started the container with, and stop it on SIGTERM. The entrypoint of an
+ * image: `serveFromEnv(cliAdapter({ ... }))`.
+ *
+ * @param adapter - The agent to run.
+ * @param env - The environment. Default `process.env`.
+ * @returns The running server.
+ */
+export async function serveFromEnv(
+  adapter: ContainerAdapter,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<DaemonServer> {
+  const token = env[CONTAINER_ENV.token];
+  const runtimeId = env[CONTAINER_ENV.runtimeId];
+  const port = Number(env[CONTAINER_ENV.port] ?? "8080");
+  if (!token || !runtimeId || !Number.isInteger(port) || port <= 0) {
+    throw new Error(
+      `${CONTAINER_ENV.token}, ${CONTAINER_ENV.runtimeId} and ${CONTAINER_ENV.port} must be set; ContainerHarness sets them`
+    );
+  }
+  // The agent's tools run arbitrary commands; they need not see the token.
+  delete env[CONTAINER_ENV.token];
+  const server = await serve({ adapter, runtimeId, token, port });
+  console.log(`harness-daemon: ${adapter.id} on ${server.port} (${runtimeId})`);
+  const stop = () => {
+    void server.close().finally(() => process.exit(0));
+  };
+  process.once("SIGTERM", stop);
+  process.once("SIGINT", stop);
+  return server;
 }

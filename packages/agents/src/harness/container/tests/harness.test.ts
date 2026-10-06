@@ -299,7 +299,7 @@ describe("ContainerHarness", () => {
     const fork = await stub.forkSession("root");
     expect(await stub.messages(fork)).toEqual(await stub.messages());
 
-    expect((await stub.prompt("fork?", fork)).text).toBe("true 2");
+    expect((await stub.prompt("restored?", fork)).text).toBe("2");
     expect((await stub.prompt("three", fork)).text).toBe(
       "echo: three (turn 3)"
     );

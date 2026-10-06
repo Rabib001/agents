@@ -1,6 +1,6 @@
 {
-  "name": "@cloudflare/agents-next-claude-code-harness-example",
-  "description": "Experimental: Claude Code in a Cloudflare Container, driven from a Durable Object by agents/harness/container",
+  "name": "@cloudflare/agents-next-container-harness-example",
+  "description": "Experimental: Claude Code or Codex in a Cloudflare Container, driven from a Durable Object by agents/harness/container",
   "private": true,
   "type": "module",
   "version": "0.0.0",
