@@ -6,7 +6,7 @@
  *
  * Node only.
  *
- * @beta The API may change between releases.
+ * @experimental The API may change before it stabilizes.
  */
 export {
   serve,

@@ -357,7 +357,7 @@ function errorText(error: unknown): string {
  *   operation that was running is settled `container_lost` or run again,
  *   per `onContainerLost`.
  *
- * @beta The API may change between releases.
+ * @experimental The API may change before it stabilizes.
  */
 export class ContainerHarness extends LifecycleCapability {
   /** Every session in this object. */
@@ -1627,7 +1627,11 @@ function resultOf(
   return undefined;
 }
 
-/** One session, addressed through the harness. */
+/**
+ * One session, addressed through the harness.
+ *
+ * @experimental The API may change before it stabilizes.
+ */
 export class ContainerSession {
   readonly #harness: ContainerHarness;
   /** The session id. */
@@ -1759,7 +1763,11 @@ export class ContainerSession {
   }
 }
 
-/** Every session in this object. */
+/**
+ * Every session in this object.
+ *
+ * @experimental The API may change before it stabilizes.
+ */
 export class ContainerSessions {
   readonly #harness: ContainerHarness;
 

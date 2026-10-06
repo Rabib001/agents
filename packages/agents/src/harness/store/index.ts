@@ -4,7 +4,7 @@
  * harness that runs its agent outside the object can keep its durable
  * record here, in whatever format it speaks.
  *
- * @beta The API may change between releases.
+ * @experimental The API may change before it stabilizes.
  */
 export {
   HarnessStore,

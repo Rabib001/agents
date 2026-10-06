@@ -276,6 +276,8 @@ class CliSession implements AdapterSession {
  *
  * @param options - The CLI's command, parser, and state directories.
  * @returns The adapter.
+ *
+ * @experimental The API may change before it stabilizes.
  */
 export function cliAdapter(options: CliAdapterOptions): ContainerAdapter {
   const homes = options.homes ?? join(homedir(), ".harness", "sessions");

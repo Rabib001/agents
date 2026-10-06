@@ -5,7 +5,7 @@
  * the harness sets the container up from `cloudflare/debian-trixie`, and
  * `ContainerEgress` keeps the credentials outside it.
  *
- * @beta The API may change between releases.
+ * @experimental The API may change before it stabilizes.
  */
 export {
   ContainerHarness,

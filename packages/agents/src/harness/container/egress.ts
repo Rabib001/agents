@@ -85,7 +85,7 @@ export async function forwardEgress(
  * export { ContainerEgress } from "agents/harness/container";
  * ```
  *
- * @beta The API may change between releases.
+ * @experimental The API may change before it stabilizes.
  */
 export class ContainerEgress extends WorkerEntrypoint<
   unknown,

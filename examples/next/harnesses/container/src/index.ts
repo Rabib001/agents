@@ -4,7 +4,6 @@ import {
   ContainerHarness,
   claudeCode,
   codex,
-  echoAgent,
   type ContainerAgent
 } from "agents/harness/container";
 import { Lifecycle } from "agents/lifecycle";
@@ -14,9 +13,10 @@ import { Lifecycle } from "agents/lifecycle";
 export { ContainerEgress } from "agents/harness/container";
 
 /**
- * One coding agent per object: Claude Code or Codex (picked by
- * `HARNESS_AGENT`) runs in this object's container, and `ContainerHarness`
- * drives it with the same interface as `PiHarness`.
+ * A coding agent per object: an agent CLI runs in this object's container,
+ * and `ContainerHarness` drives it with the same interface as `PiHarness`.
+ * The two classes below differ only in `agent()`: switching between Claude
+ * Code and Codex is the preset, nothing else.
  *
  * There is no image to build: the harness sets the container up from
  * `cloudflare/debian-trixie` on first use and snapshots it. The object
@@ -26,10 +26,13 @@ export { ContainerEgress } from "agents/harness/container";
  * which the CLI resumes its session. The AI Gateway token stays in the
  * object; the container only ever sees a placeholder.
  */
-export class CodingAgent extends DurableObject<Env> {
+abstract class CodingAgent extends DurableObject<Env> {
+  /** What runs in the container. */
+  abstract agent(): ContainerAgent;
+
   readonly harness = new ContainerHarness({
     container: containerOf(this.ctx),
-    agent: agentFor(this.env),
+    agent: this.agent(),
     egress: this.ctx.exports.ContainerEgress,
     instance: "standard-2"
   });
@@ -106,27 +109,30 @@ export class CodingAgent extends DurableObject<Env> {
   }
 }
 
-/** The agent `HARNESS_AGENT` names, reaching its provider through AI Gateway. */
-function agentFor(env: Env): ContainerAgent {
-  // With Unified Billing the gateway takes its own token as the key.
-  const key = env.AI_GATEWAY_TOKEN;
-  const name: string = env.HARNESS_AGENT;
-  switch (name) {
-    case "codex":
-      return codex({ baseUrl: `${env.AI_GATEWAY_URL}/openai`, apiKey: key });
-    case "echo":
-      return echoAgent();
-    default:
-      return claudeCode({
-        baseUrl: `${env.AI_GATEWAY_URL}/anthropic`,
-        apiKey: key
-      });
+/** Claude Code, at `/agents/claude-code-agent/<name>`. */
+export class ClaudeCodeAgent extends CodingAgent {
+  agent(): ContainerAgent {
+    return claudeCode({
+      baseUrl: `${this.env.AI_GATEWAY_URL}/anthropic`,
+      // With Unified Billing the gateway takes its own token as the key.
+      apiKey: this.env.AI_GATEWAY_TOKEN
+    });
+  }
+}
+
+/** Codex, at `/agents/codex-agent/<name>`. */
+export class CodexAgent extends CodingAgent {
+  agent(): ContainerAgent {
+    return codex({
+      baseUrl: `${this.env.AI_GATEWAY_URL}/openai`,
+      apiKey: this.env.AI_GATEWAY_TOKEN
+    });
   }
 }
 
 function containerOf(ctx: DurableObjectState): Container {
   if (!ctx.container) {
-    throw new Error("CodingAgent needs a container: see wrangler.jsonc");
+    throw new Error("This agent needs a container: see wrangler.jsonc");
   }
   return ctx.container;
 }

@@ -4,7 +4,7 @@
  * adapter for the agent you run. Runs anywhere: it uses no Node or Workers
  * APIs.
  *
- * @beta The API may change between releases.
+ * @experimental The API may change before it stabilizes.
  */
 export {
   ContainerDaemon,

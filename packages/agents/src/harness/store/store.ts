@@ -25,7 +25,7 @@
  * The store is synchronous, like the SQL API under it, so a harness can
  * group several writes in `transaction()` without awaiting.
  *
- * @beta The API may change between releases.
+ * @experimental The API may change before it stabilizes.
  */
 
 /** A JSON value, as the store keeps it. */
@@ -182,7 +182,7 @@ function chunks(text: string): string[] {
 /**
  * The store. Construct it with `openHarnessStore`.
  *
- * @beta The API may change between releases.
+ * @experimental The API may change before it stabilizes.
  */
 export class HarnessStore {
   readonly #storage: DurableObjectStorage;

@@ -54,6 +54,8 @@ function tokenMatches(expected: string, given: string | undefined): boolean {
  *
  * @param options - The adapter, identity, secret, and port.
  * @returns The running server, once it listens.
+ *
+ * @experimental The API may change before it stabilizes.
  */
 export async function serve(options: ServeOptions): Promise<DaemonServer> {
   const daemon = new ContainerDaemon({
@@ -134,6 +136,8 @@ export async function serve(options: ServeOptions): Promise<DaemonServer> {
  * @param adapter - The agent to run.
  * @param env - The environment. Default `process.env`.
  * @returns The running server.
+ *
+ * @experimental The API may change before it stabilizes.
  */
 export async function serveFromEnv(
   adapter: ContainerAdapter,

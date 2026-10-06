@@ -18,7 +18,7 @@
  * Modelled on the AI SDK's harness bridge (`runBridge`): the runtime owns
  * the transport, sequencing and replay, and an adapter owns only the agent.
  *
- * @beta The API may change between releases.
+ * @experimental The API may change before it stabilizes.
  */
 
 import {
@@ -151,7 +151,7 @@ type Opened = {
 /**
  * The daemon core. One per container process.
  *
- * @beta The API may change between releases.
+ * @experimental The API may change before it stabilizes.
  */
 export class ContainerDaemon {
   readonly #adapter: ContainerAdapter;
@@ -527,6 +527,8 @@ function errorText(error: unknown): string {
  * - `slow <ms> <text>` waits `ms` before answering, and stops on abort.
  * - `fail <reason>` settles the operation unanswered with `reason`.
  * - anything else is echoed with the turn number: `echo: hi (turn 3)`.
+ *
+ * @experimental The API may change before it stabilizes.
  */
 export const echoAdapter: ContainerAdapter = {
   id: "echo",

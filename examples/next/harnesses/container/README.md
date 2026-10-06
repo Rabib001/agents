@@ -6,41 +6,55 @@ Container, and a plain Durable Object drives it with the same interface as
 `PiHarness`. There is no Dockerfile, and no credentials enter the container.
 
 ```ts
-import { ContainerHarness, claudeCode } from "agents/harness/container";
+import { ContainerHarness, claudeCode, codex } from "agents/harness/container";
 
 // Adds the credentials outside the container; export it from the main module.
 export { ContainerEgress } from "agents/harness/container";
 
-export class CodingAgent extends DurableObject<Env> {
+abstract class CodingAgent extends DurableObject<Env> {
+  abstract agent(): ContainerAgent;
+
   readonly harness = new ContainerHarness({
     container: this.ctx.container,
     egress: this.ctx.exports.ContainerEgress,
-    agent: claudeCode({
-      access: {
-        gateway: {
-          url: this.env.AI_GATEWAY_URL,
-          token: this.env.AI_GATEWAY_TOKEN
-        }
-      }
-    })
+    agent: this.agent()
   });
 
   readonly lifecycle = Lifecycle.install(this).use(this.harness);
 }
 
-// anywhere in the object:
+export class ClaudeCodeAgent extends CodingAgent {
+  agent() {
+    return claudeCode({
+      baseUrl: `${this.env.AI_GATEWAY_URL}/anthropic`,
+      apiKey: this.env.AI_GATEWAY_TOKEN
+    });
+  }
+}
+
+export class CodexAgent extends CodingAgent {
+  agent() {
+    return codex({
+      baseUrl: `${this.env.AI_GATEWAY_URL}/openai`,
+      apiKey: this.env.AI_GATEWAY_TOKEN
+    });
+  }
+}
+
+// anywhere in either object:
 const { text } = await this.harness.prompt("Add a test for parse()");
 ```
 
-`codex()` with the gateway's `/openai` base URL runs Codex instead.
-Nothing else changes. Leave out `baseUrl` to call the provider directly with
-its own key, and add `headers` for anything else a request needs (gateway
-metadata, or `cf-aig-authorization` for a BYOK gateway).
+The two agents differ only in the preset. Leave out `baseUrl` to call the
+provider directly with its own key, and add `headers` for anything else a
+request needs (gateway metadata, or `cf-aig-authorization` for a BYOK
+gateway).
 
 ```jsonc
 // wrangler.jsonc
 "containers": [
-  { "class_name": "CodingAgent", "scheduling_policy": "durable_object" }
+  { "class_name": "ClaudeCodeAgent", "scheduling_policy": "durable_object" },
+  { "class_name": "CodexAgent", "scheduling_policy": "durable_object" }
 ]
 ```
 
@@ -107,18 +121,17 @@ put an AI Gateway token in `.dev.vars`:
 ```sh
 echo "AI_GATEWAY_TOKEN=..." > .dev.vars
 pnpm install
-pnpm run dev                                # Claude Code
-pnpm run dev -- --var HARNESS_AGENT:codex   # Codex
-pnpm run dev -- --var HARNESS_AGENT:echo    # no model, no credentials
+pnpm run dev
 ```
 
 With [Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/)
 the gateway token is the only credential, and it never leaves the object.
 
-Exercise the agent named `demo`:
+Exercise the agent named `demo`, as Claude Code or as Codex: the routes are
+the same.
 
 ```sh
-B=http://localhost:8787/agents/coding-agent/demo
+B=http://localhost:8787/agents/claude-code-agent/demo   # or /agents/codex-agent/demo
 
 # Prompt and wait for the answer.
 curl -X POST $B/prompt -H "content-type: application/json" \

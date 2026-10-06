@@ -6,30 +6,24 @@
   "compatibility_flags": ["nodejs_compat"],
   "durable_objects": {
     "bindings": [
-      {
-        "name": "CodingAgent",
-        "class_name": "CodingAgent"
-      }
+      { "name": "ClaudeCodeAgent", "class_name": "ClaudeCodeAgent" },
+      { "name": "CodexAgent", "class_name": "CodexAgent" }
     ]
   },
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["CodingAgent"]
+      "new_sqlite_classes": ["ClaudeCodeAgent", "CodexAgent"]
     }
   ],
   // One container per agent object, started and stopped by the object
   // through `ctx.container`. No image: the harness builds the container
   // from cloudflare/debian-trixie at runtime.
   "containers": [
-    {
-      "class_name": "CodingAgent",
-      "scheduling_policy": "durable_object"
-    }
+    { "class_name": "ClaudeCodeAgent", "scheduling_policy": "durable_object" },
+    { "class_name": "CodexAgent", "scheduling_policy": "durable_object" }
   ],
   "vars": {
-    // "claude-code", "codex", or "echo" (no model or credentials).
-    "HARNESS_AGENT": "claude-code",
     // Your AI Gateway: https://gateway.ai.cloudflare.com/v1/<account>/<gateway>
     "AI_GATEWAY_URL": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>"
   },

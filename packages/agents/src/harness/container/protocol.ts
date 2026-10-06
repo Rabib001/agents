@@ -16,7 +16,7 @@
  * `hello` means a different container: its numbering starts again, and
  * whatever the old container was doing is gone.
  *
- * @beta The wire may change between releases. The object and the image are
+ * @experimental The wire may change before it stabilizes. The object and the image are
  * a matched pair; a version mismatch is reported in `hello`.
  */
 

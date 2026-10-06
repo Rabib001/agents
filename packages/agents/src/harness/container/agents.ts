@@ -118,6 +118,8 @@ export type ClaudeCodeAgentOptions = ProviderConnection & {
  * @param options - Its provider connection (`apiKey`, `baseUrl`,
  *   `headers`) and settings.
  * @returns The agent, for `ContainerHarness`'s `agent`.
+ *
+ * @experimental The API may change before it stabilizes.
  */
 export function claudeCode(options: ClaudeCodeAgentOptions): ContainerAgent {
   const host = "anthropic.harness.internal";
@@ -178,6 +180,8 @@ export type CodexAgentOptions = ProviderConnection & {
  * @param options - Its provider connection (`apiKey`, `baseUrl`,
  *   `headers`) and settings.
  * @returns The agent, for `ContainerHarness`'s `agent`.
+ *
+ * @experimental The API may change before it stabilizes.
  */
 export function codex(options: CodexAgentOptions): ContainerAgent {
   const host = "openai.harness.internal";
@@ -223,6 +227,8 @@ export type CustomAgentOptions = {
  *
  * @param options - The image, the adapter, and its environment.
  * @returns The agent, for `ContainerHarness`'s `agent`.
+ *
+ * @experimental The API may change before it stabilizes.
  */
 export function containerAgent(options: CustomAgentOptions): ContainerAgent {
   return {
@@ -240,6 +246,8 @@ export function containerAgent(options: CustomAgentOptions): ContainerAgent {
  * credentials. For smoke tests of the whole path.
  *
  * @returns The agent, for `ContainerHarness`'s `agent`.
+ *
+ * @experimental The API may change before it stabilizes.
  */
 export function echoAgent(): ContainerAgent {
   return {
