@@ -144,10 +144,12 @@ export class AiSdkHarness<TOOLS extends ToolSet = ToolSet>
 
   override async onStart(): Promise<void> {
     // Sessions with unsettled operations: an earlier instance was running
-    // them, or was about to.
-    for (const [, session] of this.#kv.list<StoredSession>({
-      prefix: `${PREFIX}s:`
-    })) {
+    // them, or was about to. Read them all first: storage allows one open
+    // kv.list() at a time, and #pending() lists too.
+    const sessions = [
+      ...this.#kv.list<StoredSession>({ prefix: `${PREFIX}s:` })
+    ];
+    for (const [, session] of sessions) {
       if (this.#pending(session.id).length > 0) await this.#wake(session.id);
     }
   }
@@ -241,6 +243,12 @@ export class AiSdkHarness<TOOLS extends ToolSet = ToolSet>
     }
     const settled = isPending(op)
       ? await new Promise<StoredOperation>((resolve, reject) => {
+          // An abort event fires once, so a signal aborted before the wait
+          // began would never reach the listener below.
+          if (signal?.aborted) {
+            reject(signal.reason);
+            return;
+          }
           const key = waiterKey(session, operationId);
           const waiters = this.#waiters.get(key) ?? new Set();
           this.#waiters.set(key, waiters);
