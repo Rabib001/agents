@@ -218,7 +218,8 @@ export type ContainerHarnessOptions = {
    * milliseconds. The harness then snapshots its filesystem (workspace
    * included) and stops it; the next prompt starts a new one from that
    * snapshot and resumes the session in it. Default five minutes; at most
-   * six hours.
+   * six hours less two minutes (the platform's own stop comes two minutes
+   * later, and the harness must snapshot first).
    */
   readonly idleTimeoutMs?: number;
   /** How long a new container may take to answer. Default 60 seconds. */
@@ -437,9 +438,15 @@ export class ContainerHarness extends LifecycleCapability {
   constructor(options: ContainerHarnessOptions) {
     super("container-harness");
     const idle = options.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
-    if (!Number.isFinite(idle) || idle <= 0 || idle > 6 * 60 * 60_000) {
+    // The platform stops an inactive container at most six hours after
+    // its object goes quiet; the harness must stop (and snapshot) it first.
+    if (
+      !Number.isFinite(idle) ||
+      idle <= 0 ||
+      idle > MAX_INACTIVITY_MS - IDLE_GRACE_MS
+    ) {
       throw new Error(
-        "ContainerHarness idleTimeoutMs must be positive and at most six hours"
+        "ContainerHarness idleTimeoutMs must be positive and at most six hours less two minutes"
       );
     }
     for (const route of options.agent.egress) {
@@ -868,12 +875,19 @@ export class ContainerHarness extends LifecycleCapability {
       this.#listeners.set(session, set);
     }
     set.add(relay);
-    const snapshot: ContainerSessionSnapshot = {
-      session,
-      messages: await this.transcript(session),
-      pending: await this.pending({ session }),
-      busy: await this.busy(session)
-    };
+    let snapshot: ContainerSessionSnapshot;
+    try {
+      snapshot = {
+        session,
+        messages: await this.transcript(session),
+        pending: await this.pending({ session }),
+        busy: await this.busy(session)
+      };
+    } catch (error) {
+      // No stream to stop: drop the relay here (an unknown session, say).
+      set.delete(relay);
+      throw error;
+    }
     return {
       snapshot,
       start: (next) => {
@@ -1022,7 +1036,7 @@ export class ContainerHarness extends LifecycleCapability {
 
   /** The platform's inactivity timeout: past the harness's own idle stop. */
   #inactivityTimeoutMs(): number {
-    return Math.min(this.#idleTimeoutMs + IDLE_GRACE_MS, MAX_INACTIVITY_MS);
+    return this.#idleTimeoutMs + IDLE_GRACE_MS;
   }
 
   /** The idle stop: destroy the container once nothing has used it for `idleTimeoutMs`. */
@@ -1177,6 +1191,9 @@ export class ContainerHarness extends LifecycleCapability {
         }
       }
     } catch (error) {
+      // A snapshot the platform refuses (expired, say) must not be tried
+      // again: the next attempt falls back to the next source.
+      await this.#forget(from);
       return {
         _tag: "err",
         error: { _tag: "unreachable", message: errorText(error) }
@@ -1195,6 +1212,15 @@ export class ContainerHarness extends LifecycleCapability {
       }
     }
     return { _tag: "ok", value: from };
+  }
+
+  /** Drop the snapshot a failed start came from, so the next start falls back. */
+  async #forget(from: StartedFrom): Promise<void> {
+    if (from === "workspace")
+      await this.lifecycle.storage.delete(WORKSPACE_KEY);
+    else if (from === "snapshot") {
+      await this.lifecycle.storage.delete(SNAPSHOT_KEY);
+    }
   }
 
   /** What a container's filesystem is built from: the setup, or the image. */
@@ -1221,9 +1247,14 @@ export class ContainerHarness extends LifecycleCapability {
       };
       await this.lifecycle.storage.put(WORKSPACE_KEY, saved);
     } catch (error) {
-      console.warn("[container-harness] workspace snapshot failed", {
-        error: errorText(error)
-      });
+      // An older workspace snapshot would roll the workspace back past what
+      // the conversation has seen: start the next container from the clean
+      // setup instead.
+      await this.lifecycle.storage.delete(WORKSPACE_KEY);
+      console.warn(
+        "[container-harness] workspace snapshot failed; the next container starts without this workspace",
+        { error: errorText(error) }
+      );
     }
   }
 
@@ -1250,11 +1281,7 @@ export class ContainerHarness extends LifecycleCapability {
     if (healthy._tag === "err") {
       // The snapshot may have expired: start from the next best thing
       // next time (the setup snapshot, then a fresh setup).
-      if (started.value === "workspace") {
-        await this.lifecycle.storage.delete(WORKSPACE_KEY);
-      } else if (started.value === "snapshot") {
-        await this.lifecycle.storage.delete(SNAPSHOT_KEY);
-      }
+      await this.#forget(started.value);
       await container.destroy().catch(() => undefined);
       return healthy;
     }

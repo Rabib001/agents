@@ -139,6 +139,45 @@ describe("ContainerHarness with a managed image", () => {
     });
   });
 
+  it("falls back past snapshots that start() refuses", async () => {
+    const stub = fresh();
+    await stub.prompt("one");
+    await stub.stopContainer();
+    await stub.failSnapshotStart(true);
+    const receipt = await stub.submit("two");
+    // The workspace snapshot, then the setup snapshot, are refused and
+    // forgotten; the next attempt sets up afresh.
+    await until(async () => {
+      await runDurableObjectAlarm(stub);
+      return (await stub.pending()).length === 0;
+    }, "a fresh setup");
+    expect((await stub.wait(receipt.operationId)).status).toBe("done");
+    expect((await stub.setup()).lastStart).toMatchObject({
+      image: "cloudflare/debian-trixie"
+    });
+  });
+
+  it("does not restore an older workspace when the latest snapshot fails", async () => {
+    const stub = fresh();
+    await stub.prompt("one");
+    await stub.stopContainer(); // workspace snapshot-2
+    await stub.prompt("two");
+    await stub.failSnapshot(true);
+    await stub.stopContainer(); // fails: snapshot-2 is now stale
+    await stub.failSnapshot(false);
+    await stub.prompt("three");
+    // The clean setup snapshot, not the stale workspace.
+    expect((await stub.setup()).lastStart).toMatchObject({
+      containerSnapshot: { id: "snapshot-1" }
+    });
+  });
+
+  it("rejects events() for an unknown session", async () => {
+    expect(await fresh().eventsOfMissing()).toMatch(
+      /Unknown container session/
+    );
+  });
+
   it("reports a failed setup step", async () => {
     const stub = fresh();
     await stub.failExec("npm install");
@@ -196,6 +235,30 @@ describe("forwardEgress", () => {
 });
 
 describe("ContainerHarness options", () => {
+  it("keeps the idle stop ahead of the platform's six-hour limit", async () => {
+    const { ContainerHarness } = await import("../harness");
+    const { containerAgent } = await import("../agents");
+    const agent = containerAgent({ image: "x", adapter: "a" });
+    // SAFETY: the constructor only checks its options.
+    const container = {} as unknown as Container;
+    expect(
+      () =>
+        new ContainerHarness({
+          container,
+          agent,
+          idleTimeoutMs: 6 * 60 * 60_000
+        })
+    ).toThrow(/at most six hours less two minutes/);
+    expect(
+      () =>
+        new ContainerHarness({
+          container,
+          agent,
+          idleTimeoutMs: 6 * 60 * 60_000 - 2 * 60_000
+        })
+    ).not.toThrow();
+  });
+
   it("refuses an egress upstream that is not https", async () => {
     const { ContainerHarness } = await import("../harness");
     const { containerAgent } = await import("../agents");

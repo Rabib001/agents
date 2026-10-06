@@ -40,6 +40,10 @@ export class FakeContainer {
   failExec: string | undefined;
   /** When set, a start from a snapshot never comes up, as an expired one. */
   failSnapshotRestore = false;
+  /** When set, `start()` refuses a snapshot outright. */
+  failSnapshotStart = false;
+  /** When set, `snapshotContainer()` fails. */
+  failSnapshot = false;
   #daemon: ContainerDaemon | undefined;
   #token = "";
   #sockets = new Set<WebSocket>();
@@ -56,6 +60,9 @@ export class FakeContainer {
   start(options?: StartRecord & { env?: Record<string, string> }): void {
     this.startAttempts += 1;
     if (this.failStarts) throw new Error("no capacity");
+    if (options?.containerSnapshot && this.failSnapshotStart) {
+      throw new Error("snapshot expired");
+    }
     const env = options?.env ?? {};
     this.starts += 1;
     this.lastEnv = { ...env };
@@ -115,6 +122,7 @@ export class FakeContainer {
     name?: string;
   }): Promise<{ id: string; size: number }> {
     if (!this.running) throw new Error("container is not running");
+    if (this.failSnapshot) throw new Error("snapshot failed");
     this.snapshots += 1;
     return { id: `snapshot-${this.snapshots}`, size: 1 };
   }

@@ -343,6 +343,24 @@ export class ContainerManagedTestObject extends ContainerHarnessTestObject {
     this.fake.failSnapshotRestore = fail;
   }
 
+  failSnapshotStart(fail: boolean): void {
+    this.fake.failSnapshotStart = fail;
+  }
+
+  failSnapshot(fail: boolean): void {
+    this.fake.failSnapshot = fail;
+  }
+
+  /** `events()` on a session that does not exist, as an error message. */
+  async eventsOfMissing(): Promise<string> {
+    try {
+      await this.harness.session("missing").events();
+      return "no error";
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
   /** Call through the container's intercept, as the CLI would. */
   async egressProbe() {
     const intercept = this.fake.intercepts.get("anthropic.harness.internal");

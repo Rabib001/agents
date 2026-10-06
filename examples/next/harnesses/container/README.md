@@ -119,7 +119,10 @@ claudeCode({
 });
 ```
 
-Changing `setup` sets the container up afresh on its next start. A token a
+Changing `setup` takes effect when a container next starts: one that is
+running when you deploy keeps its setup until it stops (idle, or
+`harness.stop()`), and the next one sets up afresh. The workspace snapshot
+is tied to the old setup, so the new container starts without it. A token a
 step uses (to clone a private repository, say) stays in the snapshot, where
 the agent can read it: prefer public sources or short-lived URLs.
 
