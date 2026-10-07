@@ -13,7 +13,11 @@ import {
   type ConnectionContext,
   type WSMessage
 } from "agents";
-import type { ChatResponseResult, SaveMessagesResult } from "agents/chat";
+import {
+  toProviderSafeFileParts,
+  type ChatResponseResult,
+  type SaveMessagesResult
+} from "agents/chat";
 import {
   ThinkChat,
   ThinkHarness,
@@ -683,10 +687,10 @@ export class Think<
     };
     const config = await this.beforeTurn({
       system: turn.system ?? this.getSystemPrompt(),
-      messages: await convertToModelMessages([...turn.messages], {
-        tools,
-        ignoreIncompleteToolCalls: true
-      }),
+      messages: await convertToModelMessages(
+        turn.messages.map(toProviderSafeFileParts),
+        { tools, ignoreIncompleteToolCalls: true }
+      ),
       tools,
       model,
       continuation: turn.continuation,

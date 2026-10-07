@@ -271,7 +271,11 @@ import type {
   ChatTurnOutcome,
   OrphanPersistStore
 } from "agents/chat";
-import { truncateOlderMessages, truncateOlderToolResults } from "agents/chat";
+import {
+  toProviderSafeFileParts,
+  truncateOlderMessages,
+  truncateOlderToolResults
+} from "agents/chat";
 import {
   Sessions,
   isCompactionMessage,
@@ -7129,8 +7133,9 @@ export class Think<
     tools: ToolSet
   ): Promise<Awaited<ReturnType<typeof convertToModelMessages>>> {
     const history = await this._turnHistory();
-    const providerSafeHistory = history.map(
-      toProviderSafeExecutionOutcomeMessage
+    // Model-only projections: the stored transcript keeps its original parts.
+    const providerSafeHistory = history.map((message) =>
+      toProviderSafeFileParts(toProviderSafeExecutionOutcomeMessage(message))
     );
     const keepRecent = truncationKeepRecent(
       providerSafeHistory.length,

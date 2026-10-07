@@ -428,6 +428,17 @@ export class ThinkHarnessTestObject extends DurableObject<Cloudflare.Env> {
     return seen;
   }
 
+  /** Write a user message with a file part on the Sessions handle. */
+  async storeFile(url: string): Promise<void> {
+    await this.#handles.get("")?.appendMessage({
+      id: crypto.randomUUID(),
+      role: "user",
+      parts: [
+        { type: "file", url, mediaType: "text/plain", filename: "notes.txt" }
+      ]
+    });
+  }
+
   /** Delete a message, then compact, on the Sessions handle; the events seen. */
   async deleteAndCompact(messageId: string): Promise<string[]> {
     const seen: string[] = [];

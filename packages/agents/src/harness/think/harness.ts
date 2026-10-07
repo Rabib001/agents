@@ -23,6 +23,7 @@ import type {
 } from "../../lifecycle/job-queue";
 import { createToolsFromClientSchemas } from "../../chat/client-tools";
 import type { StreamChunkData } from "../../chat/message-builder";
+import { toProviderSafeFileParts } from "../../chat/provider-safe-file-parts";
 import {
   ChatStreamStalledError,
   iterateWithStallWatchdog
@@ -1149,7 +1150,7 @@ export class ThinkHarness<TOOLS extends ToolSet = ToolSet>
     const effectiveSystem = config.system ?? system;
     const messages: ModelMessage[] =
       config.messages ??
-      (await convertToModelMessages(history, {
+      (await convertToModelMessages(history.map(toProviderSafeFileParts), {
         tools,
         ignoreIncompleteToolCalls: true
       }));
@@ -1428,10 +1429,10 @@ export class ThinkHarness<TOOLS extends ToolSet = ToolSet>
     const history = asUIMessages(
       await this.#handle(session).getHistory({ leafId: message.id })
     );
-    const modelMessages = await convertToModelMessages(history.slice(0, -1), {
-      tools,
-      ignoreIncompleteToolCalls: true
-    });
+    const modelMessages = await convertToModelMessages(
+      history.slice(0, -1).map(toProviderSafeFileParts),
+      { tools, ignoreIncompleteToolCalls: true }
+    );
     // The drive owns this message while it runs tools; every completion
     // updates this copy and persists it whole.
     let current = message;

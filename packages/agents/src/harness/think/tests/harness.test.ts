@@ -70,6 +70,18 @@ describe("ThinkHarness turns", () => {
     );
   });
 
+  it("sends a stored file with a relative url to the model as a text reference", async () => {
+    const stub = fresh();
+    await stub.prompt("hello");
+    await stub.storeFile("/api/files/abc");
+
+    const result = await stub.prompt("multiply 4");
+    expect(result).toMatchObject({ status: "done", text: "tool said: 12" });
+    expect(await stub.lastPromptText()).toContain(
+      "user:[attachment notes.txt (text/plain) at /api/files/abc]"
+    );
+  });
+
   it("streams an answer to a chat() callback", async () => {
     const stub = fresh();
     const { types, end } = await stub.chatCallback("multiply 2");

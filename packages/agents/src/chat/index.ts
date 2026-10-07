@@ -318,3 +318,10 @@ export {
   type TruncateOptions,
   type TruncateToolResultsOptions
 } from "./truncate-older-messages";
+
+/**
+ * @internal Model-side projection of stored file parts whose url the AI SDK
+ * can't parse (#2504), shared by `@cloudflare/think` and `ThinkHarness`; not
+ * a public API. See `provider-safe-file-parts.ts`.
+ */
+export { toProviderSafeFileParts } from "./provider-safe-file-parts";
